@@ -1,0 +1,4 @@
+interface:
+  display_name: "AppPilot MCP"
+  short_description: "Use AppPilot MCP or apppilot-mcp-call for iOS app runs."
+  default_prompt: "Use ~/.apppilot/apppilot-mcp-call to build Unity iOS, run on device, and pull logs."
