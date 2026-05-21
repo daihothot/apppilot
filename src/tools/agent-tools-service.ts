@@ -204,8 +204,8 @@ function installCodexPlugin(
     version: "0.1.0",
     description: "AppPilot MCP tools and apppilot-mcp-call fallback for Unity iOS build, real-device execution, and gurusdk log collection.",
     author: {
-      name: "AppPilot",
-      email: "local@app-pilot.dev",
+      name: "DAI",
+      email: "cheng.dai@castbox.fm",
       url: "https://local.app-pilot.dev",
     },
     homepage: "https://local.app-pilot.dev",
@@ -218,7 +218,7 @@ function installCodexPlugin(
       shortDescription: "Build, run, control, and inspect Unity iOS apps.",
       longDescription:
         "AppPilot MCP exposes tools for Unity iOS export, Xcode build, iOS real-device app execution, WDA actions, tools setup, and gurusdk OfflineLog collection. When direct MCP tools are not injected, use ~/.apppilot/apppilot-mcp-call as the supported fallback wrapper.",
-      developerName: "AppPilot",
+      developerName: "DAI",
       category: "Developer Tools",
       capabilities: ["MCP", "Developer Tools", "Automation"],
       defaultPrompt: [
