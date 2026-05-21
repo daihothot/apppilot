@@ -160,7 +160,7 @@ async function callTool(name: string, input: Record<string, unknown>): Promise<u
 async function request(method: string, params: unknown): Promise<unknown> {
   const mcpPath = process.env.APPPILOT_MCP_PATH ?? DEFAULT_MCP;
   if (!existsSync(mcpPath)) {
-    throw new Error("AppPilot MCP executable not found: " + mcpPath + ". Run apppilot tools setup --agent first.");
+    throw new Error("AppPilot server executable not found: " + mcpPath + ". Run apppilot tools setup --agent first.");
   }
 
   const child = spawn(mcpPath, [], {
@@ -234,7 +234,7 @@ async function waitForMessages(
   if (stderr) {
     throw new Error(stderr);
   }
-  throw new Error("Timed out waiting for AppPilot MCP response.");
+  throw new Error("Timed out waiting for AppPilot tool response.");
 }
 
 function parseMessages(buffer: Buffer): { messages: JsonRpcMessage[]; rest: Buffer } {
@@ -250,7 +250,7 @@ function parseMessages(buffer: Buffer): { messages: JsonRpcMessage[]; rest: Buff
     const header = rest.subarray(0, headerEnd).toString("utf8");
     const lengthMatch = header.match(/Content-Length:\s*(\d+)/i);
     if (!lengthMatch) {
-      throw new Error("Invalid MCP response header: " + header);
+      throw new Error("Invalid AppPilot tool response header: " + header);
     }
 
     const bodyLength = Number(lengthMatch[1]);
@@ -368,7 +368,7 @@ function printResult(value: unknown): void {
 }
 
 function printHelp(): void {
-  console.log(`AppPilot MCP call helper
+  console.log(`AppPilot tool call helper
 
 Usage:
   apppilot-mcp-call list

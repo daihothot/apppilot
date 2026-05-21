@@ -28,14 +28,14 @@ This installs:
 
 ## Agent Entry
 
-Use the fallback helper when direct MCP tools are not available:
+Use the fallback helper when direct AppPilot tools are not available:
 
 ```bash
 ~/.apppilot/apppilot-mcp-call list
 ~/.apppilot/apppilot-mcp-call task-status
 ```
 
-Generic MCP call:
+Generic tool call:
 
 ```bash
 ~/.apppilot/apppilot-mcp-call call execute '{"platform":"ios","domain":"app","action":"devices"}'

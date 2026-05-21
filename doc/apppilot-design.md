@@ -32,11 +32,11 @@ Agent-facing helper:
 ~/.apppilot/apppilot-mcp-call <command>
 ```
 
-Direct MCP tools may exist when Codex injects them, but `apppilot-mcp-call` is the stable fallback.
+Direct AppPilot tools may exist when Codex injects them, but `apppilot-mcp-call` is the stable fallback.
 
 ## Implemented Tool Groups
 
-MCP tool names:
+Tool names:
 
 - `unity_build`
 - `xcode_build`

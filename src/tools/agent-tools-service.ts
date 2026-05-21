@@ -202,7 +202,7 @@ function installCodexPlugin(
   writeJson(join(pluginRoot, ".codex-plugin", "plugin.json"), {
     name: APPPILOT_SKILL_NAME,
     version: "0.1.0",
-    description: "AppPilot MCP tools and apppilot-mcp-call fallback for Unity iOS build, real-device execution, and gurusdk log collection.",
+    description: "Agent-driven mobile app build, verification, and action harness.",
     author: {
       name: "DAI",
       email: "cheng.dai@castbox.fm",
@@ -210,21 +210,21 @@ function installCodexPlugin(
     },
     homepage: "https://local.app-pilot.dev",
     license: "Proprietary",
-    keywords: ["apppilot", "mcp", "unity", "ios", "xcode", "logs"],
+    keywords: ["apppilot", "mcp", "mobile", "unity", "ios", "android", "xcode", "logs", "actions"],
     skills: "./skills/",
     mcpServers: "./.mcp.json",
     interface: {
-      displayName: "AppPilot MCP",
-      shortDescription: "Build, run, control, and inspect Unity iOS apps.",
+      displayName: "AppPilot",
+      shortDescription: "Agent-driven mobile build, verify, and action harness.",
       longDescription:
-        "AppPilot MCP exposes tools for Unity iOS export, Xcode build, iOS real-device app execution, WDA actions, tools setup, and gurusdk OfflineLog collection. When direct MCP tools are not injected, use ~/.apppilot/apppilot-mcp-call as the supported fallback wrapper.",
+        "AppPilot provides an agent-driven harness for mobile app build, device execution, actions, and targeted verification logs. The current implementation focuses on Unity iOS with Xcode build, real-device launch, WDA control, and gurusdk OfflineLog verification; the harness is structured to extend to Android and additional agent-driven actions. When direct AppPilot tools are not injected, use ~/.apppilot/apppilot-mcp-call as the supported fallback wrapper.",
       developerName: "DAI",
       category: "Developer Tools",
-      capabilities: ["MCP", "Developer Tools", "Automation"],
+      capabilities: ["Build", "Verification", "Actions", "Automation"],
       defaultPrompt: [
-        "Use apppilot-mcp-call to build Unity iOS.",
-        "Run the app on iOS device and pull [Ads] logs.",
-        "Set up AppPilot iOS tools for this machine.",
+        "Build and verify a mobile app on device.",
+        "Run device actions and inspect targeted logs.",
+        "Set up the AppPilot harness for agents.",
       ],
       brandColor: "#2563EB",
       screenshots: [],

@@ -1,23 +1,23 @@
 ---
 name: apppilot-mcp
-description: Use when working with AppPilot MCP to build Unity iOS apps, run them on a real iOS device, control the app, pull OfflineLog gurusdk logs, or diagnose AppPilot permission/build/device failures. Trigger for requests involving AppPilot, apppilot MCP tools, Unity iOS build, iOS real-device run, WDA tap/swipe, pymobiledevice3, or pulling [Ads] logs.
+description: Use when working with AppPilot to build Unity iOS apps, run them on a real iOS device, control the app, pull OfflineLog gurusdk logs, or diagnose AppPilot permission/build/device failures. Trigger for requests involving AppPilot tools, Unity iOS build, iOS real-device run, WDA tap/swipe, pymobiledevice3, or pulling [Ads] logs.
 ---
 
-# AppPilot MCP
+# AppPilot
 
-Use AppPilot through direct MCP tools when they are injected in the current Codex session. If direct tools such as `mcp__apppilot_mcp__logs_dump` are not available, use the installed fallback command:
+Use AppPilot through direct tools when they are injected in the current Codex session. If direct tools such as `mcp__apppilot_mcp__logs_dump` are not available, use the installed fallback command:
 
 `~/.apppilot/apppilot-mcp-call`
 
-Do not create temporary JSON-RPC scripts. `apppilot-mcp-call` is the supported wrapper around the same AppPilot MCP server.
+Do not create temporary JSON-RPC scripts. `apppilot-mcp-call` is the supported wrapper around the same AppPilot tool server.
 
 ## Fallback Command
 
-List MCP tools:
+List available tools:
 
 `~/.apppilot/apppilot-mcp-call list`
 
-Call any MCP tool directly:
+Call any tool directly:
 
 `~/.apppilot/apppilot-mcp-call call <tool> '<json>'`
 
@@ -129,9 +129,9 @@ Use only `state`, `phase`, `elapsed`, and `log` while waiting. Continue if `stat
 
 Use `offset: 1` for the previous app log. Negative offsets are not needed in prompts. Pull the full gurusdk log only when targeted matches are insufficient.
 
-## Direct MCP Tool Names
+## Direct Tool Names
 
-When direct MCP tools are injected, use these equivalent tool names instead of the fallback command:
+When direct AppPilot tools are injected, use these equivalent tool names instead of the fallback command:
 
 - `unity_build`
 - `xcode_build`
@@ -183,7 +183,7 @@ All AppPilot runtime output is under `~/.apppilot`:
 
 ## Rules
 
-- Prefer direct MCP tools only when they are actually injected.
+- Prefer direct AppPilot tools only when they are actually injected.
 - Otherwise use `~/.apppilot/apppilot-mcp-call`; do not write temporary JSON-RPC scripts.
 - Keep build loops token-light: poll `task-status` at low frequency, do not tail logs.
 - Do not clear device logs; `log-clear` clears local AppPilot logs/artifacts only.
