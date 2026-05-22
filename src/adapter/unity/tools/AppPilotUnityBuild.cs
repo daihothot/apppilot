@@ -9,6 +9,10 @@ namespace AppPilot.UnityTools
 {
     public static class AppPilotUnityBuild
     {
+        private const string AppleDeveloperTeamId = "39253T242A";
+        private const string IosProvisioningProfileId = "74e6cf5f-6c57-4fd6-8664-04d69f9fc95d";
+        private const ProvisioningProfileType IosProvisioningProfileType = ProvisioningProfileType.Development;
+
         public static void BuildIOSDevice()
         {
             var outputPath = ReadOption("-apppilotOutputPath");
@@ -31,6 +35,10 @@ namespace AppPilot.UnityTools
             var previousBuildScriptsOnly = EditorUserBuildSettings.buildScriptsOnly;
             var previousSdkVersion = PlayerSettings.iOS.sdkVersion;
             var previousTargetDevice = PlayerSettings.iOS.targetDevice;
+            var previousAutomaticSigning = PlayerSettings.iOS.appleEnableAutomaticSigning;
+            var previousDeveloperTeamId = PlayerSettings.iOS.appleDeveloperTeamID;
+            var previousProvisioningProfileId = PlayerSettings.iOS.iOSManualProvisioningProfileID;
+            var previousProvisioningProfileType = PlayerSettings.iOS.iOSManualProvisioningProfileType;
 
             try
             {
@@ -46,8 +54,15 @@ namespace AppPilot.UnityTools
                 EditorUserBuildSettings.connectProfiler = false;
                 EditorUserBuildSettings.buildScriptsOnly = false;
 
+                PlayerSettings.muteOtherAudioSources = false;
+                PlayerSettings.iOS.appInBackgroundBehavior = iOSAppInBackgroundBehavior.Custom;
+                PlayerSettings.iOS.backgroundModes = iOSBackgroundMode.RemoteNotification | iOSBackgroundMode.Fetch;
                 PlayerSettings.iOS.sdkVersion = iOSSdkVersion.DeviceSDK;
                 PlayerSettings.iOS.targetDevice = iOSTargetDevice.iPhoneAndiPad;
+                PlayerSettings.iOS.appleEnableAutomaticSigning = false;
+                PlayerSettings.iOS.appleDeveloperTeamID = AppleDeveloperTeamId;
+                PlayerSettings.iOS.iOSManualProvisioningProfileID = IosProvisioningProfileId;
+                PlayerSettings.iOS.iOSManualProvisioningProfileType = IosProvisioningProfileType;
 
                 var buildOptions = isDebug ? BuildOptions.Development | BuildOptions.AllowDebugging : BuildOptions.None;
                 if (append)
@@ -88,6 +103,10 @@ namespace AppPilot.UnityTools
             {
                 PlayerSettings.iOS.sdkVersion = previousSdkVersion;
                 PlayerSettings.iOS.targetDevice = previousTargetDevice;
+                PlayerSettings.iOS.appleEnableAutomaticSigning = previousAutomaticSigning;
+                PlayerSettings.iOS.appleDeveloperTeamID = previousDeveloperTeamId;
+                PlayerSettings.iOS.iOSManualProvisioningProfileID = previousProvisioningProfileId;
+                PlayerSettings.iOS.iOSManualProvisioningProfileType = previousProvisioningProfileType;
                 EditorUserBuildSettings.development = previousDevelopment;
                 EditorUserBuildSettings.allowDebugging = previousAllowDebugging;
                 EditorUserBuildSettings.connectProfiler = previousConnectProfiler;
