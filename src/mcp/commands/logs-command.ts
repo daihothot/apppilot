@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { APP_LOG_IOS_DIR, OFFLINE_LOG_DIR_NAME } from "../../constants.ts";
+import { APP_LOG_ANDROID_DIR, APP_LOG_IOS_DIR, OFFLINE_LOG_DIR_NAME } from "../../constants.ts";
 import { ExecutorFactory } from "../../factory/executor-factory.ts";
 import { LogStore, type LogClearScope } from "../../log/log-store.ts";
+import type { Platform } from "../../types.ts";
 import type { McpTool } from "../mcp-tool.ts";
 import { requireString } from "../mcp-tool.ts";
 import { projectRoot } from "../project.ts";
@@ -25,12 +26,12 @@ export const logsTools: McpTool[] = [
   },
   {
     name: "logs_dump",
-    description: "Pull app logs from a device. Currently supports platform=ios and the fixed gurusdk log directory.",
+    description: "Pull app logs from a device. iOS uses the fixed gurusdk log directory; Android dumps `adb logcat -d` and applies optional match filtering.",
     inputSchema: {
       type: "object",
       properties: {
-        platform: { type: "string", enum: ["ios"] },
-        device: { type: "string", description: "iOS device UDID." },
+        platform: { type: "string", enum: ["ios", "android"] },
+        device: { type: "string", description: "iOS device UDID or Android adb serial." },
         offset: { type: "number", default: 0 },
         match: { type: "string" },
       },
@@ -44,7 +45,7 @@ export const logsTools: McpTool[] = [
       await new ExecutorFactory().createLogsExecutor(platform).dump(device, offset, match);
       return {
         message: "logs dumped.",
-        artifactRoot: APP_LOG_IOS_DIR + "/" + OFFLINE_LOG_DIR_NAME,
+        artifactRoot: platform === "android" ? APP_LOG_ANDROID_DIR + "/logcat" : APP_LOG_IOS_DIR + "/" + OFFLINE_LOG_DIR_NAME,
       };
     },
   },
@@ -78,8 +79,8 @@ function readLogClearScope(value: unknown): LogClearScope {
   throw new Error("Invalid log clear scope. Expected all, unity, xcode, or ios.");
 }
 
-function requireSupportedPlatform(platform: string): "ios" {
-  if (platform === "ios") {
+function requireSupportedPlatform(platform: string): Platform {
+  if (platform === "ios" || platform === "android") {
     return platform;
   }
   throw new Error("Unsupported logs platform: " + platform);

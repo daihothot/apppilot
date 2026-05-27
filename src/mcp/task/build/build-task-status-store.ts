@@ -1,3 +1,4 @@
+import type { Platform } from "../../../types.ts";
 import { TaskStatusStore, type TaskStatus } from "../../../task/task-status-store.ts";
 
 export interface BuildTaskStatusMetadata extends Record<string, unknown> {
@@ -9,10 +10,10 @@ export interface BuildTaskStatusMetadata extends Record<string, unknown> {
 }
 
 export class BuildTaskStatusStore extends TaskStatusStore<BuildTaskStatusMetadata> {
-  startUnityBuild(logPath: string): void {
+  startUnityBuild(logPath: string, platform: Platform = "ios"): void {
     this.start(logPath, {
       task: "unity_build",
-      platform: "ios",
+      platform,
       adapter: "unity",
     });
   }

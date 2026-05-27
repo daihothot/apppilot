@@ -1,5 +1,5 @@
 export type BuildAdapter = "unity";
-export type BuildPlatform = "ios";
+export type BuildPlatform = "ios" | "android";
 export type BuildAction = "build" | "xcode";
 
 export interface BuildTask {
@@ -21,11 +21,14 @@ export function normalizeBuildTask(input: Record<string, unknown>): BuildTask {
   if (adapter !== "unity") {
     throw new Error("Unsupported build adapter: " + adapter);
   }
-  if (platform !== "ios") {
+  if (platform !== "ios" && platform !== "android") {
     throw new Error("Unsupported build platform: " + platform);
   }
   if (action !== "build" && action !== "xcode") {
     throw new Error("Unsupported build action: " + action);
+  }
+  if (platform === "android" && action === "xcode") {
+    throw new Error("xcode build action is only supported for iOS.");
   }
 
   return {

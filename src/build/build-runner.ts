@@ -8,6 +8,9 @@ export class BuildRunner {
     if (task.adapter === "unity" && task.platform === "ios") {
       return this.runUnityIos(task);
     }
+    if (task.adapter === "unity" && task.platform === "android") {
+      return this.runUnityAndroid(task);
+    }
 
     throw new Error("Unsupported build target: adapter=" + task.adapter + ", platform=" + task.platform);
   }
@@ -37,5 +40,21 @@ export class BuildRunner {
     }
 
     return artifact;
+  }
+
+  private async runUnityAndroid(task: BuildTask): Promise<unknown> {
+    const unity = this.adapterFactory.createUnityAdapter();
+
+    if (!task.projectPath) {
+      throw new Error("projectPath is required for unity android build.");
+    }
+
+    return unity.prepareAndroid({
+      projectDir: task.projectPath,
+      debug: task.debug !== false,
+      buildRes: task.buildRes === true,
+      build: task.refresh === false,
+      refreshBuild: task.refresh !== false,
+    });
   }
 }

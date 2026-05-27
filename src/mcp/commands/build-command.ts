@@ -8,11 +8,11 @@ import type { McpTool } from "../mcp-tool.ts";
 export const buildTools: McpTool[] = [
   {
     name: "unity_build",
-    description: "Export a Unity project to an iOS Xcode project. refresh=false appends through Unity AcceptExternalModificationsToPlayer.",
+    description: "Build a Unity project. platform=ios exports an Xcode project; platform=android builds an APK directly.",
     inputSchema: {
       type: "object",
       properties: {
-        platform: { type: "string", enum: ["ios"] },
+        platform: { type: "string", enum: ["ios", "android"] },
         projectPath: { type: "string", description: "Unity project directory." },
         debug: { type: "boolean", default: true },
         refresh: { type: "boolean", default: true },
@@ -31,7 +31,7 @@ export const buildTools: McpTool[] = [
         buildRes: input.buildRes,
         xcode: false,
       });
-      new BuildTaskStatusStore().startUnityBuild(resolve(LOG_ROOT, "unity-ios-build.log"));
+      new BuildTaskStatusStore().startUnityBuild(resolve(LOG_ROOT, task.platform === "android" ? "unity-android-build.log" : "unity-ios-build.log"), task.platform);
       spawnMcpTask(["src/mcp/task/build/build-task.ts", JSON.stringify(task)]);
       return "Unity build started. Call task_status until state is success or failed.";
     },

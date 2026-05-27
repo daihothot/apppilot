@@ -5,7 +5,7 @@ import { hasFlag, requirePositional } from "./args.ts";
 export async function runUnityCommand(command: string | undefined, args: string[]): Promise<void> {
   const unity = new AdapterFactory().createUnityAdapter();
   if (command === "status") {
-    process.stdout.write(unity.statusText());
+    process.stdout.write(hasFlag(args, "--android") ? unity.androidStatusText() : unity.statusText());
     return;
   }
   if (command === "xcode") {
@@ -14,9 +14,10 @@ export async function runUnityCommand(command: string | undefined, args: string[
   }
 
   const projectDir = requirePositional(command, "UNITY_DIR");
+  const platform = hasFlag(args, "--android") ? "android" : "ios";
   const artifact = await new BuildRunner().run({
     adapter: "unity",
-    platform: "ios",
+    platform,
     action: "build",
     projectPath: projectDir,
     debug: !hasFlag(args, "--release"),

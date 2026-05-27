@@ -1,6 +1,6 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { LOG_ROOT, UNITY_IOS_BUILD_JSON, XCODE_IOS_BUILD_LOG } from "../../../constants.ts";
+import { LOG_ROOT, UNITY_ANDROID_BUILD_JSON, UNITY_IOS_BUILD_JSON, XCODE_IOS_BUILD_LOG } from "../../../constants.ts";
 import { normalizeBuildTask, type BuildTask } from "../../../build/build-task.ts";
 import { BuildRunner } from "../../../build/build-runner.ts";
 import type { BuildArtifact } from "../../../types.ts";
@@ -12,7 +12,7 @@ export async function runMcpBuildTask(rawTask = process.argv[2] ?? "{}"): Promis
   if (task.action === "xcode") {
     status.startXcodeBuild(resolve(XCODE_IOS_BUILD_LOG));
   } else {
-    status.startUnityBuild(resolve(LOG_ROOT, "unity-ios-build.log"));
+    status.startUnityBuild(resolve(LOG_ROOT, task.platform === "android" ? "unity-android-build.log" : "unity-ios-build.log"), task.platform);
   }
 
   const timer = setInterval(() => updatePhase(task, status), 5000);
@@ -42,15 +42,15 @@ if (process.argv[1]?.endsWith("src/mcp/task/build/build-task.ts")) {
 function updateArtifactMetadata(result: unknown, status: BuildTaskStatusStore): void {
   if (!isBuildArtifact(result)) return;
   status.updateBuildMetadata({
-    projectPath: result.xcodeProjectPath,
+    projectPath: result.platform === "ios" ? result.xcodeProjectPath : result.projectPath,
     xcodeProjectPath: result.xcodeProjectPath,
     appPath: result.appPath,
-    artifact: UNITY_IOS_BUILD_JSON,
+    artifact: result.platform === "android" ? UNITY_ANDROID_BUILD_JSON : UNITY_IOS_BUILD_JSON,
   });
 }
 
 function isBuildArtifact(value: unknown): value is BuildArtifact {
-  return typeof value === "object" && value !== null && "xcodeProjectPath" in value;
+  return typeof value === "object" && value !== null && "appPath" in value && "bundleId" in value;
 }
 
 function updatePhase(task: BuildTask, status: BuildTaskStatusStore): void {

@@ -89,6 +89,10 @@ function parseShortcut(command: string, args: string[]): { name: string; input: 
     if (Object.keys(env).length > 0) {
       input.env = env;
     }
+    const intent = readAndroidIntent(args);
+    if (intent) {
+      input.intent = intent;
+    }
     copyNumberOption(args, input, "--x", "x");
     copyNumberOption(args, input, "--y", "y");
     copyNumberOption(args, input, "--from-x", "fromX");
@@ -314,6 +318,74 @@ function readLaunchEnv(args: string[]): Record<string, string> {
   return env;
 }
 
+function readAndroidIntent(args: string[]): Record<string, unknown> | undefined {
+  const intent: Record<string, unknown> = {};
+  copyStringOption(args, intent, "--component", "component");
+  copyStringOption(args, intent, "--intent-action", "action");
+  copyStringOption(args, intent, "--data", "data");
+  copyStringOption(args, intent, "--mime-type", "mimeType");
+
+  const categories = readOptions(args, "--category");
+  if (categories.length > 0) intent.categories = categories;
+
+  const flags = readOptions(args, "--flag");
+  if (flags.length > 0) intent.flags = flags;
+
+  const extras = [
+    ...readAndroidExtras(args, "--es", "string"),
+    ...readAndroidExtras(args, "--ei", "int"),
+    ...readAndroidExtras(args, "--el", "long"),
+    ...readAndroidExtras(args, "--ef", "float"),
+    ...readAndroidExtras(args, "--ez", "boolean"),
+    ...readAndroidExtras(args, "--esa", "string-array"),
+    ...readAndroidExtras(args, "--eia", "int-array"),
+  ];
+  if (extras.length > 0) intent.extras = extras;
+
+  return Object.keys(intent).length > 0 ? intent : undefined;
+}
+
+function readAndroidExtras(args: string[], option: string, type: string): Array<{ type: string; key: string; value: unknown }> {
+  return readExtraPairs(args, option).map(([key, value]) => ({
+    type,
+    key,
+    value: parseAndroidExtraValue(type, value),
+  }));
+}
+
+function readExtraPairs(args: string[], option: string): Array<[string, string]> {
+  const pairs: Array<[string, string]> = [];
+  for (let index = 0; index < args.length; index++) {
+    if (args[index] !== option) continue;
+    const key = args[index + 1];
+    const value = args[index + 2];
+    if (!key || key.startsWith("--") || !value || value.startsWith("--")) {
+      throw new Error(`${option} requires KEY VALUE.`);
+    }
+    pairs.push([key, value]);
+  }
+  return pairs;
+}
+
+function parseAndroidExtraValue(type: string, value: string): unknown {
+  if (type === "int" || type === "long" || type === "float") {
+    return Number(value);
+  }
+  if (type === "boolean") {
+    if (value !== "true" && value !== "false") {
+      throw new Error("Boolean Android extras must be true or false.");
+    }
+    return value === "true";
+  }
+  if (type === "string-array") {
+    return value.split(",").filter((item) => item.length > 0);
+  }
+  if (type === "int-array") {
+    return value.split(",").filter((item) => item.length > 0).map((item) => Number(item));
+  }
+  return value;
+}
+
 function copyStringOption(args: string[], input: Record<string, unknown>, option: string, key: string): void {
   const value = readOption(args, option);
   if (value !== undefined) {
@@ -373,16 +445,21 @@ function printHelp(): void {
 Usage:
   apppilot-mcp-call list
   apppilot-mcp-call call <tool> '<json>'
-  apppilot-mcp-call unity-build --project-path <UNITY_DIR> [--platform ios] [--release] [--refresh|--no-refresh] [--build-res]
+  apppilot-mcp-call unity-build --project-path <UNITY_DIR> [--platform ios|android] [--release] [--refresh|--no-refresh] [--build-res]
   apppilot-mcp-call xcode-build [--project-path <XCODE_DIR>] [--platform ios]
   apppilot-mcp-call task-status
   apppilot-mcp-call execute --platform ios --domain app --action devices
   apppilot-mcp-call execute --platform ios --domain app --action run --device <UDID> [--env KEY=VALUE]
   apppilot-mcp-call execute --platform ios --domain app --action stop --device <UDID>
+  apppilot-mcp-call execute --platform android --domain app --action devices
+  apppilot-mcp-call execute --platform android --domain app --action run --device <SERIAL> [--component PACKAGE/.Activity] [--intent-action ACTION] [--data URI] [--mime-type TYPE] [--category CATEGORY] [--flag FLAG] [--es KEY VALUE] [--ei KEY VALUE] [--el KEY VALUE] [--ef KEY VALUE] [--ez KEY true|false] [--esa KEY a,b,c] [--eia KEY 1,2,3]
+  apppilot-mcp-call execute --platform android --domain app --action stop --device <SERIAL>
   apppilot-mcp-call execute --platform ios --domain action --action tap --device <UDID> --x <X> --y <Y>
   apppilot-mcp-call execute --platform ios --domain action --action swipe --device <UDID> --from-x <X> --from-y <Y> --to-x <X> --to-y <Y>
+  apppilot-mcp-call execute --platform android --domain action --action tap --device <SERIAL> --x <X> --y <Y>
+  apppilot-mcp-call execute --platform android --domain action --action swipe --device <SERIAL> --from-x <X> --from-y <Y> --to-x <X> --to-y <Y>
   apppilot-mcp-call log-clear [--scope all|unity|xcode|ios]
-  apppilot-mcp-call logs-dump --platform ios --device <UDID> [--offset 0] [--match '[Ads]']
+  apppilot-mcp-call logs-dump --platform ios|android --device <UDID|SERIAL> [--offset 0] [--match '[Ads]']
   apppilot-mcp-call read-app-log-artifact --path <RELATIVE_PATH>
   apppilot-mcp-call tools-setup --platform ios
 

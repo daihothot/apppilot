@@ -1,7 +1,7 @@
 import { WDA_DEFAULT_URL } from "../constants.ts";
 import { execFile } from "../process/executor.ts";
 import { requireLocalPymobiledevice3Path } from "../tools/local-python.ts";
-import type { CommandResult } from "../types.ts";
+import type { CommandResult, LaunchOptions } from "../types.ts";
 import type { Backend } from "./backend.ts";
 
 export class IosBackend implements Backend {
@@ -15,7 +15,8 @@ export class IosBackend implements Backend {
     return runPymobiledevice3(["apps", "install", appPath], device);
   }
 
-  launch(device: string, bundleId: string, launchEnv: Record<string, string> = {}): Promise<CommandResult> {
+  launch(device: string, bundleId: string, launchOptions: LaunchOptions = {}): Promise<CommandResult> {
+    const launchEnv = launchOptions.env ?? {};
     const envArgs = Object.entries(launchEnv).flatMap(([key, value]) => ["--env", `${key}=${value}`]);
     return runPymobiledevice3(["developer", "dvt", "launch", bundleId, ...envArgs], device);
   }
