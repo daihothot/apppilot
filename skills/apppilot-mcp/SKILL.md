@@ -61,6 +61,24 @@ Install and launch app. Pass repeated `--env KEY=VALUE` values when the app need
 
 `~/.apppilot/apppilot-mcp-call execute --platform ios --domain app --action run --device <UDID> [--env DEBUG_MODE=true] [--env USER_ID=12345]`
 
+To launch Unity with AppPilot runtime websocket enabled, pass `--apppilot-root <ROOT_NAME>` when a root is known. AppPilot will inject `guru_ws_client_ip_port`, `guru_apppilot=true`, and `guru_apppilot_root_name` into launch parameters, wait for the Unity app to connect back, then reverse-connect to the app-side websocket server:
+
+`~/.apppilot/apppilot-mcp-call execute --platform ios --domain app --action run --device <UDID> --apppilot-root <ROOT_NAME>`
+
+After launch, query the Unity runtime through the AppPilot websocket domain:
+
+`~/.apppilot/apppilot-mcp-call execute --domain apppilot --action queryNodes --params '{"rootPath":"","depth":1,"select":["children"]}'`
+
+Before any iOS app run, verify that `pymobiledevice3 remote tunneld` is already running in the background:
+
+`ps -axo pid,ppid,command | rg "pymobiledevice3 remote tunneld"`
+
+If it is not running, stop immediately and ask the user to run this command in a separate terminal, then retry only after they confirm it is running:
+
+`~/.apppilot/.tools/python/venv/bin/pymobiledevice3 remote tunneld`
+
+This is required because iOS launch uses `pymobiledevice3 developer dvt launch`; on modern iOS devices DVT launch and launch environment delivery need the RemoteXPC tunnel. Without tunneld, install may succeed while launch fails with errors such as `InvalidServiceError` or env values never reach the app process.
+
 Stop app:
 
 `~/.apppilot/apppilot-mcp-call execute --platform ios --domain app --action stop --device <UDID>`
@@ -121,6 +139,8 @@ Read a small pulled artifact:
 - Do not read full build logs or full run logs unless there is no practical alternative. Use `task-status` first, then inspect only the `log` path on failure. For app logs, prefer `logs-dump --match ...` such as `--match '[Ads]'`.
 - Use append mode for normal Unity iOS exports: pass `--no-refresh`. Use replace mode with `--refresh` only when append has failed, the Xcode project is stale, or a clean export is explicitly required.
 - Android Unity builds produce APKs directly; do not run `xcode_build` for Android.
+- For both iOS and Android, if the device list contains two or more connected devices, stop and ask the user which exact device ID to use. Remember that selected device for the current task and reuse it for subsequent run/action/log commands unless the user explicitly changes it.
+- Before rerunning an app on the same selected device, ensure the previous run is stopped first with `execute --domain app --action stop` for the same platform and device. Do not start a second run on top of a still-running app process.
 
 ## Standard Flow
 
@@ -146,15 +166,37 @@ Use only `state`, `phase`, `elapsed`, and `log` while waiting. Continue if `stat
 
 `~/.apppilot/apppilot-mcp-call task-status`
 
-6. List devices and choose the target UDID:
+6. List devices and choose the target device:
 
 `~/.apppilot/apppilot-mcp-call execute --platform ios --domain app --action devices`
 
-7. Install and launch on the iOS device:
+`~/.apppilot/apppilot-mcp-call execute --platform android --domain app --action devices`
+
+If two or more devices are returned for the target platform, stop and ask the user which exact UDID or serial to use. Remember the selected device for the current task and reuse it unless the user explicitly changes it.
+
+7. Before installing and launching on iOS, confirm `pymobiledevice3 remote tunneld` is running:
+
+`ps -axo pid,ppid,command | rg "pymobiledevice3 remote tunneld"`
+
+If no process is found, stop and tell the user to start tunneld in another terminal:
+
+`~/.apppilot/.tools/python/venv/bin/pymobiledevice3 remote tunneld`
+
+Explain that this is mandatory because AppPilot launches iOS apps through `pymobiledevice3 developer dvt launch`, and DVT launch/env delivery requires the RemoteXPC tunnel on modern iOS. Do not attempt the iOS app run until the user confirms tunneld is running.
+
+8. Install and launch on the iOS device:
 
 `~/.apppilot/apppilot-mcp-call execute --platform ios --domain app --action run --device <UDID> [--env DEBUG_MODE=true] [--env USER_ID=12345]`
 
-8. Pull targeted app logs with `--match`. For Ads diagnostics:
+Before any rerun on the selected iOS device, stop the previous run first:
+
+`~/.apppilot/apppilot-mcp-call execute --platform ios --domain app --action stop --device <UDID>`
+
+For Android reruns, stop the previous run first:
+
+`~/.apppilot/apppilot-mcp-call execute --platform android --domain app --action stop --device <SERIAL>`
+
+9. Pull targeted app logs with `--match`. For Ads diagnostics:
 
 `~/.apppilot/apppilot-mcp-call logs-dump --platform ios --device <UDID> --offset 0 --match '[Ads]'`
 
@@ -182,7 +224,9 @@ Real iOS device work often needs host privileges outside the Codex sandbox.
 - Do not run `sudo` yourself. If a root command is needed, show the exact command and wait for the user to run it.
 - If WDA action calls fail, check that WebDriverAgent is running and reachable at `APPPILOT_WDA_URL` or `http://localhost:8100`.
 - Use `execute --domain app --action devices` to get a UDID before run/action/log commands.
+- If two or more iOS or Android devices are connected, stop and ask the user which exact UDID or serial to use. Remember the selected device for the current task unless the user explicitly changes it.
 - Run/action/log commands require `--device` explicitly. App run supports repeated `--env KEY=VALUE` launch environment variables.
+- Before rerunning an app on the selected device, stop the previous run with `execute --domain app --action stop` for the same platform/device.
 
 ## Failure Handling
 
