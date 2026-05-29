@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { appendFileSync, rmSync } from "node:fs";
-import type { CommandResult } from "../types.ts";
+import type { CommandResult } from "./types.ts";
 
 export interface ExecFileOptions {
   env?: Record<string, string | undefined>;

@@ -1,7 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { TASK_STATUS_JSON } from "../constants.ts";
-import type { TaskStatus } from "../task/task-status-store.ts";
+import type { TaskStatus } from "../core/task/task-status-store.ts";
 import { projectRoot } from "./project.ts";
 
 export interface McpTaskStatus {
@@ -13,7 +12,7 @@ export interface McpTaskStatus {
 }
 
 export function readTaskStatus(): McpTaskStatus {
-  const statusPath = resolve(projectRoot(), TASK_STATUS_JSON);
+  const statusPath = resolve(projectRoot(), "log", "status.json");
   if (!existsSync(statusPath)) {
     return {
       state: "unknown",

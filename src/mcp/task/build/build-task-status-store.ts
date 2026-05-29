@@ -1,5 +1,5 @@
-import type { Platform } from "../../../types.ts";
-import { TaskStatusStore, type TaskStatus } from "../../../task/task-status-store.ts";
+import type { Platform } from "../../../devices/types.ts";
+import { TaskStatusStore, type TaskStatus } from "../../../core/task/task-status-store.ts";
 
 export interface BuildTaskStatusMetadata extends Record<string, unknown> {
   adapter: "unity";

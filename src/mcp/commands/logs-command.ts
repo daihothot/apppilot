@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { APP_LOG_ANDROID_DIR, APP_LOG_IOS_DIR, OFFLINE_LOG_DIR_NAME } from "../../constants.ts";
-import { ExecutorFactory } from "../../factory/executor-factory.ts";
-import { LogStore, type LogClearScope } from "../../log/log-store.ts";
-import type { Platform } from "../../types.ts";
+import { join, resolve } from "node:path";
+import { appPilotConfig } from "../../config/app-pilot-config.ts";
+import { ExecutorFactory } from "../../core/factory/executor-factory.ts";
+import { LogStore, type LogClearScope } from "../../core/log/log-store.ts";
+import type { Platform } from "../../devices/types.ts";
 import type { McpTool } from "../mcp-tool.ts";
 import { requireString } from "../mcp-tool.ts";
 import { projectRoot } from "../project.ts";
@@ -45,7 +45,9 @@ export const logsTools: McpTool[] = [
       await new ExecutorFactory().createLogsExecutor(platform).dump(device, offset, match);
       return {
         message: "logs dumped.",
-        artifactRoot: platform === "android" ? APP_LOG_ANDROID_DIR + "/logcat" : APP_LOG_IOS_DIR + "/" + OFFLINE_LOG_DIR_NAME,
+        artifactRoot: platform === "android"
+          ? join(appPilotConfig.paths.appLogAndroidDir, "logcat")
+          : join(appPilotConfig.paths.appLogIosDir, appPilotConfig.offlineLogs.dirName),
       };
     },
   },

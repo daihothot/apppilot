@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
-import { LogStore } from "../log/log-store.ts";
+import { registerAppPilotEventHandlers } from "../apppilot/app-pilot-launch.ts";
+import { LogStore } from "../core/log/log-store.ts";
 import { runActionCommand } from "./action-command.ts";
 import { runAppCommand } from "./app-command.ts";
 import { runLogCommand } from "./log-command.ts";
@@ -8,6 +9,7 @@ import { runToolsCommand } from "./tools-command.ts";
 import { runUnityCommand } from "./unity-command.ts";
 
 async function main(argv: string[]): Promise<void> {
+  registerAppPilotEventHandlers();
   const [domain, command, ...rest] = argv;
 
   switch (domain) {
@@ -45,8 +47,8 @@ Usage:
   apppilot unity xcode status
   apppilot app devices --ios
   apppilot app devices --android
-  apppilot app run --ios --device <UDID> [--env KEY=VALUE]
-  apppilot app run --android --device <SERIAL> [--component PACKAGE/.Activity] [--intent-action ACTION] [--data URI] [--mime-type TYPE] [--category CATEGORY] [--flag FLAG] [--es KEY VALUE]
+  apppilot app run --ios --device <UDID> [--env KEY=VALUE] [--apppilot-root ROOT]
+  apppilot app run --android --device <SERIAL> [--apppilot-root ROOT] [--component PACKAGE/.Activity] [--intent-action ACTION] [--data URI] [--mime-type TYPE] [--category CATEGORY] [--flag FLAG] [--es KEY VALUE]
   apppilot app stop --ios --device <UDID>
   apppilot app stop --android --device <SERIAL>
   apppilot action tap --ios --device <UDID> 11,213

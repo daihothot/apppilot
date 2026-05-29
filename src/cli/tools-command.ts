@@ -1,4 +1,4 @@
-import { LogStore } from "../log/log-store.ts";
+import { LogStore } from "../core/log/log-store.ts";
 import { AgentToolsService } from "../tools/agent-tools-service.ts";
 import { IosToolsService } from "../tools/ios-tools-service.ts";
 import { hasFlag } from "./args.ts";

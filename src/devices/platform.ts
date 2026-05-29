@@ -1,5 +1,5 @@
-import type { Platform } from "../types.ts";
-import { hasFlag } from "./args.ts";
+import { hasFlag } from "../cli/args.ts";
+import type { Platform } from "./types.ts";
 
 export function readPlatform(args: string[]): Platform {
   if (hasFlag(args, "--ios")) {

@@ -1,12 +1,23 @@
-import { execFile } from "../process/executor.ts";
-import type { AndroidIntentExtra, AndroidLaunchIntent, CommandResult, LaunchOptions } from "../types.ts";
-import type { Backend } from "./backend.ts";
+import { execFile } from "../../core/process/executor.ts";
+import type { CommandResult } from "../../core/process/types.ts";
+import type { DeviceDriver, DeviceLogDump, DeviceLogDumpOptions } from "../device-driver.ts";
+import type { LaunchOptions } from "../types.ts";
+import type { AndroidIntentExtra, AndroidLaunchIntent, AndroidLaunchOptions } from "./types.ts";
 
-export class AndroidBackend implements Backend {
+export class AndroidDeviceDriver implements DeviceDriver {
   readonly platform = "android";
 
   listDevices(): Promise<CommandResult> {
     return runAdb(["devices", "-l"]);
+  }
+
+  prepareLaunchOptions(launchOptions: LaunchOptions, params: Record<string, string>): LaunchOptions {
+    const androidOptions = launchOptions as AndroidLaunchOptions;
+    const next: AndroidLaunchOptions = {
+      ...androidOptions,
+      androidIntent: mergeIntentExtras(androidOptions.androidIntent, params),
+    };
+    return next;
   }
 
   install(device: string, appPath: string): Promise<CommandResult> {
@@ -14,12 +25,12 @@ export class AndroidBackend implements Backend {
   }
 
   launch(device: string, bundleId: string, launchOptions: LaunchOptions = {}): Promise<CommandResult> {
-    const intent = launchOptions.androidIntent;
+    const intent = (launchOptions as AndroidLaunchOptions).androidIntent;
     if (!intent || isEmptyIntent(intent)) {
       return runAdb(["-s", device, "shell", "monkey", "-p", bundleId, "1"]);
     }
 
-    return runAdb(["-s", device, ...buildAmStartArgs(intent)]);
+    return runAdb(["-s", device, ...buildAmStartArgs(intent, bundleId)]);
   }
 
   stop(device: string, bundleId: string): Promise<CommandResult> {
@@ -48,8 +59,22 @@ export class AndroidBackend implements Backend {
     ]);
   }
 
-  pullAppLogFile(_device: string, _bundleId: string, _remotePath: string, _localPath: string): Promise<CommandResult> {
-    return runAdb(["-s", _device, "pull", _remotePath, _localPath]);
+  async dumpAppLogs(options: DeviceLogDumpOptions): Promise<DeviceLogDump> {
+    if (options.offset !== 0) {
+      throw new Error("Android logs-dump uses adb logcat and supports offset=0 only.");
+    }
+
+    const result = await runAdb(["-s", options.device, "logcat", "-d"]);
+    if (result.exitCode !== 0) {
+      throw new Error(result.stderr.trim() || "Android logcat dump failed.");
+    }
+
+    return {
+      kind: "text",
+      content: result.stdout,
+      prefix: "logcat",
+      sourceName: `logcat-${formatTimestampForFileName(new Date())}.txt`,
+    };
   }
 }
 
@@ -57,9 +82,12 @@ function runAdb(args: string[]): Promise<CommandResult> {
   return execFile("adb", args);
 }
 
-function buildAmStartArgs(intent: AndroidLaunchIntent): string[] {
+function buildAmStartArgs(intent: AndroidLaunchIntent, bundleId: string): string[] {
   const args = ["shell", "am", "start"];
 
+  if (!intent.component && !intent.action && !intent.data) {
+    args.push("-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", bundleId);
+  }
   if (intent.component) args.push("-n", intent.component);
   if (intent.action) args.push("-a", intent.action);
   if (intent.data) args.push("-d", intent.data);
@@ -69,6 +97,24 @@ function buildAmStartArgs(intent: AndroidLaunchIntent): string[] {
   for (const extra of intent.extras ?? []) args.push(...buildExtraArgs(extra));
 
   return args;
+}
+
+function mergeIntentExtras(intent: AndroidLaunchIntent | undefined, values: Record<string, string>): AndroidLaunchIntent {
+  const extras: AndroidIntentExtra[] = [...(intent?.extras ?? [])];
+  for (const [key, value] of Object.entries(values)) {
+    const index = extras.findIndex((item) => item.key === key);
+    const extra: AndroidIntentExtra = { type: "string", key, value };
+    if (index >= 0) {
+      extras[index] = extra;
+    } else {
+      extras.push(extra);
+    }
+  }
+
+  return {
+    ...(intent ?? {}),
+    extras,
+  };
 }
 
 function buildExtraArgs(extra: AndroidIntentExtra): string[] {
@@ -143,4 +189,9 @@ function parsePoint(value: string): { x: number; y: number } {
     throw new Error(`Invalid point: ${value}. Expected x,y.`);
   }
   return { x, y };
+}
+
+function formatTimestampForFileName(date: Date): string {
+  const iso = date.toISOString();
+  return iso.replace(/[-:]/g, "").replace(/\..+$/, "Z");
 }

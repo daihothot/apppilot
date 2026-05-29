@@ -1,7 +1,9 @@
-import { ExecutorFactory } from "../factory/executor-factory.ts";
-import type { AndroidIntentExtra, AndroidLaunchIntent, LaunchOptions, Platform } from "../types.ts";
+import type { AppPilotLaunchOptions } from "../apppilot/types.ts";
+import { ExecutorFactory } from "../core/factory/executor-factory.ts";
+import type { AndroidIntentExtra, AndroidLaunchIntent, AndroidLaunchOptions } from "../devices/android/types.ts";
+import type { LaunchOptions, Platform } from "../devices/types.ts";
+import { readPlatform } from "../devices/platform.ts";
 import { readOptions, requireOption } from "./args.ts";
-import { readPlatform } from "./platform.ts";
 
 export async function runAppCommand(command: string | undefined, args: string[]): Promise<void> {
   const platform = readPlatform(args);
@@ -23,10 +25,12 @@ export async function runAppCommand(command: string | undefined, args: string[])
 }
 
 function readLaunchOptions(platform: Platform, args: string[]): LaunchOptions {
+  const appPilot = readAppPilotLaunchOptions(args);
   if (platform === "ios") {
-    return { env: readLaunchEnv(args) };
+    return { env: readLaunchEnv(args), appPilot };
   }
-  return { androidIntent: readAndroidIntent(args) };
+  const androidOptions: AndroidLaunchOptions = { androidIntent: readAndroidIntent(args), appPilot };
+  return androidOptions;
 }
 
 function readLaunchEnv(args: string[]): Record<string, string> {
@@ -113,12 +117,47 @@ function parseAndroidExtraValue(type: AndroidIntentExtra["type"], value: string)
   return value;
 }
 
-function copyStringOption(args: string[], target: Record<string, unknown>, option: string, key: string): void {
+function copyStringOption<T extends object, K extends keyof T>(args: string[], target: T, option: string, key: K): void {
   const index = args.indexOf(option);
   if (index === -1) return;
   const value = args[index + 1];
   if (!value || value.startsWith("--")) {
     throw new Error(`Missing value for ${option}.`);
   }
-  target[key] = value;
+  target[key] = value as T[K];
+}
+
+function readAppPilotLaunchOptions(args: string[]): AppPilotLaunchOptions | undefined {
+  const enabled = args.includes("--apppilot") || args.includes("--apppilot-enable");
+  const rootName = readOption(args, "--apppilot-root");
+  const portRaw = readOption(args, "--apppilot-port");
+  const waitMsRaw = readOption(args, "--apppilot-wait-ms");
+  if (!enabled && !rootName && !portRaw && !waitMsRaw) {
+    return undefined;
+  }
+
+  return {
+    enabled: true,
+    rootName,
+    port: portRaw ? parseNumberOption("--apppilot-port", portRaw) : undefined,
+    waitMs: waitMsRaw ? parseNumberOption("--apppilot-wait-ms", waitMsRaw) : undefined,
+  };
+}
+
+function readOption(args: string[], option: string): string | undefined {
+  const index = args.indexOf(option);
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`Missing value for ${option}.`);
+  }
+  return value;
+}
+
+function parseNumberOption(option: string, value: string): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    throw new Error(`${option} must be a finite number.`);
+  }
+  return number;
 }

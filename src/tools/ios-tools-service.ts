@@ -1,9 +1,9 @@
 import { appendFileSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
-import { LOCAL_PYMOBILEDEVICE3_PATH, LOCAL_PYTHON_BIN, LOCAL_PYTHON_VENV_DIR } from "../constants.ts";
-import { LogStore } from "../log/log-store.ts";
-import { execFile } from "../process/executor.ts";
-import type { CommandResult } from "../types.ts";
+import { appPilotConfig } from "../config/app-pilot-config.ts";
+import { LogStore } from "../core/log/log-store.ts";
+import { execFile } from "../core/process/executor.ts";
+import type { CommandResult } from "../core/process/types.ts";
 
 export interface IosToolsSetupResult {
   ios: boolean;
@@ -30,24 +30,24 @@ export class IosToolsService {
       appendSetupLog(options.logPath, "iOS tools setup started");
     }
 
-    mkdirSync(dirname(LOCAL_PYTHON_VENV_DIR), { recursive: true });
+    mkdirSync(dirname(appPilotConfig.paths.localPythonVenvDir), { recursive: true });
 
     try {
-      if (!existsSync(LOCAL_PYTHON_BIN)) {
+      if (!existsSync(appPilotConfig.paths.localPythonBin)) {
         options.onPhase?.("creating-python-venv");
-        appendSetupLog(options.logPath, `creating venv: ${LOCAL_PYTHON_VENV_DIR}`);
-        const venv = await execFile("python3", ["-m", "venv", LOCAL_PYTHON_VENV_DIR]);
+        appendSetupLog(options.logPath, `creating venv: ${appPilotConfig.paths.localPythonVenvDir}`);
+        const venv = await execFile("python3", ["-m", "venv", appPilotConfig.paths.localPythonVenvDir]);
         commands.push(venv);
         appendCommandLog(options.logPath, venv);
         if (venv.exitCode !== 0) {
           throw new Error(venv.stderr.trim() || "Failed to create local Python venv.");
         }
-        this.log.log("local python venv created", { path: LOCAL_PYTHON_VENV_DIR });
+        this.log.log("local python venv created", { path: appPilotConfig.paths.localPythonVenvDir });
       }
 
       options.onPhase?.("upgrading-pip");
       appendSetupLog(options.logPath, "upgrading pip");
-      const pipUpgrade = await execFile(LOCAL_PYTHON_BIN, ["-m", "pip", "install", "-U", "pip"]);
+      const pipUpgrade = await execFile(appPilotConfig.paths.localPythonBin, ["-m", "pip", "install", "-U", "pip"]);
       commands.push(pipUpgrade);
       appendCommandLog(options.logPath, pipUpgrade);
       if (pipUpgrade.exitCode !== 0) {
@@ -56,7 +56,7 @@ export class IosToolsService {
 
       options.onPhase?.("installing-pymobiledevice3");
       appendSetupLog(options.logPath, "installing pymobiledevice3");
-      const install = await execFile(LOCAL_PYTHON_BIN, ["-m", "pip", "install", "-U", "pymobiledevice3"]);
+      const install = await execFile(appPilotConfig.paths.localPythonBin, ["-m", "pip", "install", "-U", "pymobiledevice3"]);
       commands.push(install);
       appendCommandLog(options.logPath, install);
       if (install.exitCode !== 0) {
@@ -65,7 +65,7 @@ export class IosToolsService {
 
       options.onPhase?.("verifying-pymobiledevice3");
       appendSetupLog(options.logPath, "verifying pymobiledevice3");
-      const version = await execFile(LOCAL_PYMOBILEDEVICE3_PATH, ["version"]);
+      const version = await execFile(appPilotConfig.paths.localPymobiledevice3, ["version"]);
       commands.push(version);
       appendCommandLog(options.logPath, version);
       if (version.exitCode !== 0) {
@@ -76,15 +76,15 @@ export class IosToolsService {
       options.onVersion?.(versionText);
 
       this.log.log("ios tools setup finished", {
-        python: LOCAL_PYTHON_BIN,
-        pymobiledevice3: LOCAL_PYMOBILEDEVICE3_PATH,
+        python: appPilotConfig.paths.localPythonBin,
+        pymobiledevice3: appPilotConfig.paths.localPymobiledevice3,
         version: versionText,
       });
 
       return {
         ios: true,
-        python: LOCAL_PYTHON_BIN,
-        pymobiledevice3: LOCAL_PYMOBILEDEVICE3_PATH,
+        python: appPilotConfig.paths.localPythonBin,
+        pymobiledevice3: appPilotConfig.paths.localPymobiledevice3,
         commands,
       };
     } catch (error) {

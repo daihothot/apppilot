@@ -1,5 +1,5 @@
-import { APPPILOT_HOME } from "../constants.ts";
+import { appPilotConfig } from "../config/app-pilot-config.ts";
 
 export function projectRoot(): string {
-  return APPPILOT_HOME;
+  return appPilotConfig.paths.home;
 }

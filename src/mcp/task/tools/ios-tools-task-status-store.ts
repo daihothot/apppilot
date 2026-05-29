@@ -1,5 +1,5 @@
-import { LOCAL_PYMOBILEDEVICE3_PATH, LOCAL_PYTHON_BIN, LOCAL_PYTHON_VENV_DIR } from "../../../constants.ts";
-import { TaskStatusStore, type TaskStatus } from "../../../task/task-status-store.ts";
+import { appPilotConfig } from "../../../config/app-pilot-config.ts";
+import { TaskStatusStore, type TaskStatus } from "../../../core/task/task-status-store.ts";
 
 export interface IosToolsTaskStatusMetadata extends Record<string, unknown> {
   pythonPath?: string;
@@ -13,9 +13,9 @@ export class IosToolsTaskStatusStore extends TaskStatusStore<IosToolsTaskStatusM
     this.start(logPath, {
       task: "tools_setup",
       platform: "ios",
-      pythonPath: LOCAL_PYTHON_BIN,
-      venvPath: LOCAL_PYTHON_VENV_DIR,
-      pymobiledevice3Path: LOCAL_PYMOBILEDEVICE3_PATH,
+      pythonPath: appPilotConfig.paths.localPythonBin,
+      venvPath: appPilotConfig.paths.localPythonVenvDir,
+      pymobiledevice3Path: appPilotConfig.paths.localPymobiledevice3,
     });
   }
 
@@ -27,9 +27,9 @@ export class IosToolsTaskStatusStore extends TaskStatusStore<IosToolsTaskStatusM
     super.write({
       task: "tools_setup",
       platform: "ios",
-      pythonPath: LOCAL_PYTHON_BIN,
-      venvPath: LOCAL_PYTHON_VENV_DIR,
-      pymobiledevice3Path: LOCAL_PYMOBILEDEVICE3_PATH,
+      pythonPath: appPilotConfig.paths.localPythonBin,
+      venvPath: appPilotConfig.paths.localPythonVenvDir,
+      pymobiledevice3Path: appPilotConfig.paths.localPymobiledevice3,
       ...status,
     });
   }

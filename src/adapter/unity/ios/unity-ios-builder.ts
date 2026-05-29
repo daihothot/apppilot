@@ -1,10 +1,10 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { APPPILOT_HOME, LOG_ROOT, UNITY_BUILD_TIMEOUT_MS } from "../../../constants.ts";
-import type { BuildConfiguration } from "../../../types.ts";
-import { LogStore } from "../../../log/log-store.ts";
-import { execFile } from "../../../process/executor.ts";
+import { appPilotConfig } from "../../../config/app-pilot-config.ts";
+import type { BuildConfiguration } from "../../../core/build/types.ts";
+import { LogStore } from "../../../core/log/log-store.ts";
+import { execFile } from "../../../core/process/executor.ts";
 
 export interface UnityIosBuildOptions {
   projectPath: string;
@@ -23,7 +23,7 @@ export class UnityIosBuilder {
   async build(options: UnityIosBuildOptions): Promise<void> {
     const unityPath = this.findUnityExecutable(options.projectPath);
     const injectedScriptPath = this.injectBuildScript(options.projectPath);
-    const logPath = resolve(LOG_ROOT, "unity-ios-build.log");
+    const logPath = resolve(appPilotConfig.paths.logRoot, "unity-ios-build.log");
 
     try {
       const result = await execFile(unityPath, [
@@ -43,7 +43,7 @@ export class UnityIosBuilder {
         options.append ? "true" : "false",
         "-logFile",
         logPath,
-      ], { timeoutMs: UNITY_BUILD_TIMEOUT_MS });
+      ], { timeoutMs: appPilotConfig.timeouts.unityBuildMs });
 
       if (result.exitCode !== 0) {
         this.log.error("unity ios device build failed", { exitCode: result.exitCode, logPath });
@@ -67,7 +67,7 @@ export class UnityIosBuilder {
 
   private readBuildScriptPath(): string {
     const candidates = [
-      join(APPPILOT_HOME, "tools", "AppPilotUnityBuild.cs"),
+      join(appPilotConfig.paths.home, "tools", "AppPilotUnityBuild.cs"),
       fileURLToPath(new URL("../tools/AppPilotUnityBuild.cs", import.meta.url)),
     ];
     const match = candidates.find((candidate) => existsSync(candidate));

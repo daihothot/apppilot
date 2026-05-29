@@ -1,5 +1,5 @@
-import { BuildRunner } from "../build/build-runner.ts";
-import { AdapterFactory } from "../factory/adapter-factory.ts";
+import { BuildRunner } from "../core/build/build-runner.ts";
+import { AdapterFactory } from "../core/factory/adapter-factory.ts";
 import { hasFlag, requirePositional } from "./args.ts";
 
 export async function runUnityCommand(command: string | undefined, args: string[]): Promise<void> {

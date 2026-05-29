@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { TASK_STATUS_JSON } from "../constants.ts";
+import { appPilotConfig } from "../../config/app-pilot-config.ts";
 
 export type TaskState = "running" | "success" | "failed";
 
@@ -18,7 +18,7 @@ export interface BaseTaskStatus {
 export type TaskStatus<TMetadata extends Record<string, unknown> = Record<string, unknown>> = BaseTaskStatus & Partial<TMetadata>;
 
 export class TaskStatusStore<TMetadata extends Record<string, unknown> = Record<string, unknown>> {
-  constructor(private readonly statusPath = TASK_STATUS_JSON) {}
+  constructor(private readonly statusPath = appPilotConfig.paths.taskStatusJson) {}
 
   start(logPath: string, metadata: Partial<BaseTaskStatus & TMetadata> = {}): void {
     this.write({
@@ -82,7 +82,7 @@ export class TaskStatusStore<TMetadata extends Record<string, unknown> = Record<
   private finish(state: Exclude<TaskState, "running">, phase: string): void {
     const previous = this.read();
     const now = new Date().toISOString();
-    this.write({
+    const next = {
       ...previous,
       state,
       phase,
@@ -90,7 +90,8 @@ export class TaskStatusStore<TMetadata extends Record<string, unknown> = Record<
       updatedAt: now,
       finishedAt: now,
       log: previous?.log ?? "",
-    });
+    } as TaskStatus<TMetadata>;
+    this.write(next);
   }
 
   protected write(status: TaskStatus<TMetadata>): void {

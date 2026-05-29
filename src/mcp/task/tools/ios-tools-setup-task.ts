@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { APPPILOT_HOME, IOS_TOOLS_SETUP_LOG, LOG_ROOT } from "../../../constants.ts";
-import { LogStore } from "../../../log/log-store.ts";
+import { appPilotConfig } from "../../../config/app-pilot-config.ts";
+import { LogStore } from "../../../core/log/log-store.ts";
 import { IosToolsService } from "../../../tools/ios-tools-service.ts";
 import { IosToolsTaskStatusStore } from "./ios-tools-task-status-store.ts";
 
@@ -14,20 +14,20 @@ export function isIosToolsSetupTaskArg(value: string | undefined): boolean {
 }
 
 export function spawnIosToolsSetupTask(): void {
-  const logPath = resolve(IOS_TOOLS_SETUP_LOG);
+  const logPath = resolve(appPilotConfig.paths.iosToolsSetupLog);
   new IosToolsTaskStatusStore().startSetup(logPath);
 
   if (isSourceRuntime()) {
-    spawnDetached("bun", [resolve(sourceRoot(), "src/mcp/task/tools/ios-tools-setup-task.ts")], APPPILOT_HOME);
+    spawnDetached("bun", [resolve(sourceRoot(), "src/mcp/task/tools/ios-tools-setup-task.ts")], appPilotConfig.paths.home);
     return;
   }
 
-  spawnDetached(process.execPath, [IOS_TOOLS_SETUP_TASK_ARG], APPPILOT_HOME);
+  spawnDetached(process.execPath, [IOS_TOOLS_SETUP_TASK_ARG], appPilotConfig.paths.home);
 }
 
 export async function runIosToolsSetupTask(): Promise<void> {
   const status = new IosToolsTaskStatusStore();
-  const logPath = resolve(IOS_TOOLS_SETUP_LOG);
+  const logPath = resolve(appPilotConfig.paths.iosToolsSetupLog);
   status.startSetup(logPath);
 
   await new IosToolsService(new LogStore()).setup({
@@ -51,10 +51,10 @@ function sourceRoot(): string {
 }
 
 function spawnDetached(command: string, args: string[], cwd: string): void {
-  mkdirSync(APPPILOT_HOME, { recursive: true });
-  mkdirSync(LOG_ROOT, { recursive: true });
-  mkdirSync(dirname(resolve(IOS_TOOLS_SETUP_LOG)), { recursive: true });
-  const taskLog = openSync(join(LOG_ROOT, "apppilot-task.log"), "a");
+  mkdirSync(appPilotConfig.paths.home, { recursive: true });
+  mkdirSync(appPilotConfig.paths.logRoot, { recursive: true });
+  mkdirSync(dirname(resolve(appPilotConfig.paths.iosToolsSetupLog)), { recursive: true });
+  const taskLog = openSync(join(appPilotConfig.paths.logRoot, "apppilot-task.log"), "a");
   const child = spawn(command, args, {
     cwd,
     detached: true,

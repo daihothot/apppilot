@@ -27,7 +27,7 @@ function startServer(): void {
   let buffer = Buffer.alloc(0);
 
   process.stdin.on("data", (chunk) => {
-    buffer = Buffer.concat([buffer, chunk]);
+    buffer = Buffer.concat([buffer, Buffer.from(chunk)]);
     drainMessages().catch((error) => writeError(null, -32603, error instanceof Error ? error.message : String(error)));
   });
 

@@ -1,11 +1,10 @@
 #!/usr/bin/env bun
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { appPilotConfig } from "../config/app-pilot-config.ts";
 
-const DEFAULT_MCP = join(homedir(), ".apppilot", "apppilot-mcp");
-const DEFAULT_CWD = join(homedir(), ".apppilot");
+const DEFAULT_MCP = appPilotConfig.paths.mcpExecutable;
+const DEFAULT_CWD = appPilotConfig.paths.home;
 
 interface JsonRpcMessage {
   jsonrpc: "2.0";
@@ -89,10 +88,19 @@ function parseShortcut(command: string, args: string[]): { name: string; input: 
     if (Object.keys(env).length > 0) {
       input.env = env;
     }
+    const appPilot = readAppPilotLaunchOptions(args);
+    if (appPilot) {
+      input.appPilot = appPilot;
+    }
     const intent = readAndroidIntent(args);
     if (intent) {
       input.intent = intent;
     }
+    const params = readOption(args, "--params");
+    if (params) {
+      input.params = readJsonArg(params);
+    }
+    copyStringOption(args, input, "--method", "method");
     copyNumberOption(args, input, "--x", "x");
     copyNumberOption(args, input, "--y", "y");
     copyNumberOption(args, input, "--from-x", "fromX");
@@ -177,44 +185,52 @@ async function request(method: string, params: unknown): Promise<unknown> {
   child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
   child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
 
-  writeMessage(child, {
-    jsonrpc: "2.0",
-    id: 1,
-    method: "initialize",
-    params: {
-      protocolVersion: "2024-11-05",
-      capabilities: {},
-      clientInfo: { name: "apppilot-mcp-call", version: "0.1.0" },
-    },
-  });
-  writeMessage(child, { jsonrpc: "2.0", id: 2, method, params });
+  try {
+    writeMessage(child, {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2024-11-05",
+        capabilities: {},
+        clientInfo: { name: "apppilot-mcp-call", version: "0.1.0" },
+      },
+    });
+    writeMessage(child, { jsonrpc: "2.0", id: 2, method, params });
 
-  const messages = await waitForMessages(child, stdoutChunks, stderrChunks, 2);
-  child.kill();
-
-  const response = messages.find((message) => message.id === 2);
-  if (!response) {
-    throw new Error("No JSON-RPC response for " + method);
+    const messages = await waitForMessages(child, stdoutChunks, stderrChunks, 2);
+    const response = messages.find((message) => message.id === 2);
+    if (!response) {
+      throw new Error("No JSON-RPC response for " + method);
+    }
+    if (response.error) {
+      throw new Error(response.error.message);
+    }
+    return response.result;
+  } finally {
+    child.kill();
   }
-  if (response.error) {
-    throw new Error(response.error.message);
-  }
-  return response.result;
 }
 
 function writeMessage(child: ReturnType<typeof spawn>, message: JsonRpcMessage): void {
+  if (!child.stdin) {
+    throw new Error("AppPilot MCP process stdin is not available.");
+  }
+
   const body = JSON.stringify(message);
   child.stdin.write("Content-Length: " + Buffer.byteLength(body, "utf8") + "\r\n\r\n" + body);
 }
 
+type NodeBuffer = Buffer<ArrayBufferLike>;
+
 async function waitForMessages(
   child: ReturnType<typeof spawn>,
-  stdoutChunks: Buffer[],
-  stderrChunks: Buffer[],
+  stdoutChunks: NodeBuffer[],
+  stderrChunks: NodeBuffer[],
   expectedResponseId: number,
 ): Promise<JsonRpcMessage[]> {
   const deadline = Date.now() + Number(process.env.APPPILOT_MCP_CALL_TIMEOUT_MS ?? "30000");
-  let buffer = Buffer.alloc(0);
+  let buffer: NodeBuffer = Buffer.alloc(0);
   const messages: JsonRpcMessage[] = [];
 
   while (Date.now() < deadline) {
@@ -241,7 +257,7 @@ async function waitForMessages(
   throw new Error("Timed out waiting for AppPilot tool response.");
 }
 
-function parseMessages(buffer: Buffer): { messages: JsonRpcMessage[]; rest: Buffer } {
+function parseMessages(buffer: NodeBuffer): { messages: JsonRpcMessage[]; rest: NodeBuffer } {
   const messages: JsonRpcMessage[] = [];
   let rest = buffer;
 
@@ -316,6 +332,30 @@ function readLaunchEnv(args: string[]): Record<string, string> {
     env[item.slice(0, equals)] = item.slice(equals + 1);
   }
   return env;
+}
+
+function readAppPilotLaunchOptions(args: string[]): Record<string, unknown> | undefined {
+  const enabled = args.includes("--apppilot") || args.includes("--apppilot-enable");
+  const rootName = readOption(args, "--apppilot-root");
+  const port = readOption(args, "--apppilot-port");
+  const waitMs = readOption(args, "--apppilot-wait-ms");
+  if (!enabled && !rootName && !port && !waitMs) {
+    return undefined;
+  }
+  return {
+    enabled: true,
+    ...(rootName ? { rootName } : {}),
+    ...(port ? { port: parseNumberOption("--apppilot-port", port) } : {}),
+    ...(waitMs ? { waitMs: parseNumberOption("--apppilot-wait-ms", waitMs) } : {}),
+  };
+}
+
+function parseNumberOption(option: string, value: string): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    throw new Error(option + " must be a finite number.");
+  }
+  return number;
 }
 
 function readAndroidIntent(args: string[]): Record<string, unknown> | undefined {
@@ -449,15 +489,17 @@ Usage:
   apppilot-mcp-call xcode-build [--project-path <XCODE_DIR>] [--platform ios]
   apppilot-mcp-call task-status
   apppilot-mcp-call execute --platform ios --domain app --action devices
-  apppilot-mcp-call execute --platform ios --domain app --action run --device <UDID> [--env KEY=VALUE]
+  apppilot-mcp-call execute --platform ios --domain app --action run --device <UDID> [--env KEY=VALUE] [--apppilot-root ROOT]
   apppilot-mcp-call execute --platform ios --domain app --action stop --device <UDID>
   apppilot-mcp-call execute --platform android --domain app --action devices
-  apppilot-mcp-call execute --platform android --domain app --action run --device <SERIAL> [--component PACKAGE/.Activity] [--intent-action ACTION] [--data URI] [--mime-type TYPE] [--category CATEGORY] [--flag FLAG] [--es KEY VALUE] [--ei KEY VALUE] [--el KEY VALUE] [--ef KEY VALUE] [--ez KEY true|false] [--esa KEY a,b,c] [--eia KEY 1,2,3]
+  apppilot-mcp-call execute --platform android --domain app --action run --device <SERIAL> [--apppilot-root ROOT] [--component PACKAGE/.Activity] [--intent-action ACTION] [--data URI] [--mime-type TYPE] [--category CATEGORY] [--flag FLAG] [--es KEY VALUE] [--ei KEY VALUE] [--el KEY VALUE] [--ef KEY VALUE] [--ez KEY true|false] [--esa KEY a,b,c] [--eia KEY 1,2,3]
   apppilot-mcp-call execute --platform android --domain app --action stop --device <SERIAL>
   apppilot-mcp-call execute --platform ios --domain action --action tap --device <UDID> --x <X> --y <Y>
   apppilot-mcp-call execute --platform ios --domain action --action swipe --device <UDID> --from-x <X> --from-y <Y> --to-x <X> --to-y <Y>
   apppilot-mcp-call execute --platform android --domain action --action tap --device <SERIAL> --x <X> --y <Y>
   apppilot-mcp-call execute --platform android --domain action --action swipe --device <SERIAL> --from-x <X> --from-y <Y> --to-x <X> --to-y <Y>
+  apppilot-mcp-call execute --domain apppilot --action status
+  apppilot-mcp-call execute --domain apppilot --action queryNodes --params '{"rootPath":"","depth":1,"select":["children"]}'
   apppilot-mcp-call log-clear [--scope all|unity|xcode|ios]
   apppilot-mcp-call logs-dump --platform ios|android --device <UDID|SERIAL> [--offset 0] [--match '[Ads]']
   apppilot-mcp-call read-app-log-artifact --path <RELATIVE_PATH>

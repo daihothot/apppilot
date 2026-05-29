@@ -1,12 +1,12 @@
 import { existsSync } from "node:fs";
-import { LOCAL_PYMOBILEDEVICE3_PATH } from "../constants.ts";
+import { appPilotConfig } from "../config/app-pilot-config.ts";
 
 export function requireLocalPymobiledevice3Path(): string {
-  if (!existsSync(LOCAL_PYMOBILEDEVICE3_PATH)) {
+  if (!existsSync(appPilotConfig.paths.localPymobiledevice3)) {
     throw new Error(
-      `Local pymobiledevice3 not found at ${LOCAL_PYMOBILEDEVICE3_PATH}. Run: apppilot tools setup --ios`,
+      `Local pymobiledevice3 not found at ${appPilotConfig.paths.localPymobiledevice3}. Run: apppilot tools setup --ios`,
     );
   }
 
-  return LOCAL_PYMOBILEDEVICE3_PATH;
+  return appPilotConfig.paths.localPymobiledevice3;
 }

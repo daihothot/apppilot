@@ -1,6 +1,6 @@
-import { ExecutorFactory } from "../factory/executor-factory.ts";
+import { ExecutorFactory } from "../core/factory/executor-factory.ts";
+import { readPlatform } from "../devices/platform.ts";
 import { requireOption, requirePositional } from "./args.ts";
-import { readPlatform } from "./platform.ts";
 
 export async function runActionCommand(command: string | undefined, args: string[]): Promise<void> {
   const platform = readPlatform(args);

@@ -1,18 +1,18 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { resolve } from "node:path";
-import { LOG_ROOT, UNITY_ANDROID_BUILD_JSON, UNITY_IOS_BUILD_JSON, XCODE_IOS_BUILD_LOG } from "../../../constants.ts";
-import { normalizeBuildTask, type BuildTask } from "../../../build/build-task.ts";
-import { BuildRunner } from "../../../build/build-runner.ts";
-import type { BuildArtifact } from "../../../types.ts";
+import { appPilotConfig } from "../../../config/app-pilot-config.ts";
+import { normalizeBuildTask, type BuildTask } from "../../../core/build/build-task.ts";
+import { BuildRunner } from "../../../core/build/build-runner.ts";
+import type { BuildArtifact } from "../../../core/build/types.ts";
 import { BuildTaskStatusStore } from "./build-task-status-store.ts";
 
 export async function runMcpBuildTask(rawTask = process.argv[2] ?? "{}"): Promise<void> {
   const task = normalizeBuildTask(JSON.parse(rawTask) as Record<string, unknown>);
   const status = new BuildTaskStatusStore();
   if (task.action === "xcode") {
-    status.startXcodeBuild(resolve(XCODE_IOS_BUILD_LOG));
+    status.startXcodeBuild(resolve(appPilotConfig.paths.xcodeIosBuildLog));
   } else {
-    status.startUnityBuild(resolve(LOG_ROOT, task.platform === "android" ? "unity-android-build.log" : "unity-ios-build.log"), task.platform);
+    status.startUnityBuild(resolve(appPilotConfig.paths.logRoot, task.platform === "android" ? "unity-android-build.log" : "unity-ios-build.log"), task.platform);
   }
 
   const timer = setInterval(() => updatePhase(task, status), 5000);
@@ -45,7 +45,7 @@ function updateArtifactMetadata(result: unknown, status: BuildTaskStatusStore): 
     projectPath: result.platform === "ios" ? result.xcodeProjectPath : result.projectPath,
     xcodeProjectPath: result.xcodeProjectPath,
     appPath: result.appPath,
-    artifact: result.platform === "android" ? UNITY_ANDROID_BUILD_JSON : UNITY_IOS_BUILD_JSON,
+    artifact: result.platform === "android" ? appPilotConfig.paths.unityAndroidBuildJson : appPilotConfig.paths.unityIosBuildJson,
   });
 }
 

@@ -2,7 +2,8 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFi
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { LogStore } from "../log/log-store.ts";
+import { appPilotConfig } from "../config/app-pilot-config.ts";
+import { LogStore } from "../core/log/log-store.ts";
 
 const APPPILOT_MCP_SERVER_NAME = "apppilot";
 const APPPILOT_SKILL_NAME = "apppilot-mcp";
@@ -26,12 +27,12 @@ export class AgentToolsService {
   constructor(private readonly log: LogStore) {}
 
   setup(): AgentToolsSetupResult {
-    const apppilotHome = join(homedir(), ".apppilot");
+    const apppilotHome = appPilotConfig.paths.home;
     const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
     const codexConfig = join(codexHome, "config.toml");
     const staleApppilotTarget = join(apppilotHome, "apppilot");
-    const mcpTarget = join(apppilotHome, "apppilot-mcp");
-    const mcpCallTarget = join(apppilotHome, "apppilot-mcp-call");
+    const mcpTarget = appPilotConfig.paths.mcpExecutable;
+    const mcpCallTarget = appPilotConfig.paths.mcpCallExecutable;
     const toolsTarget = join(apppilotHome, "tools");
     const workspaceSkillTarget = join(apppilotHome, "skills", APPPILOT_SKILL_NAME);
     const staleStandaloneSkillTarget = join(codexHome, "skills", APPPILOT_SKILL_NAME);

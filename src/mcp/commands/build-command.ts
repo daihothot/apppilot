@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
-import { LOG_ROOT, XCODE_IOS_BUILD_LOG } from "../../constants.ts";
-import { normalizeBuildTask } from "../../build/build-task.ts";
+import { appPilotConfig } from "../../config/app-pilot-config.ts";
+import { normalizeBuildTask } from "../../core/build/build-task.ts";
 import { BuildTaskStatusStore } from "../task/build/build-task-status-store.ts";
 import { spawnMcpTask } from "../process.ts";
 import type { McpTool } from "../mcp-tool.ts";
@@ -31,7 +31,7 @@ export const buildTools: McpTool[] = [
         buildRes: input.buildRes,
         xcode: false,
       });
-      new BuildTaskStatusStore().startUnityBuild(resolve(LOG_ROOT, task.platform === "android" ? "unity-android-build.log" : "unity-ios-build.log"), task.platform);
+      new BuildTaskStatusStore().startUnityBuild(resolve(appPilotConfig.paths.logRoot, task.platform === "android" ? "unity-android-build.log" : "unity-ios-build.log"), task.platform);
       spawnMcpTask(["src/mcp/task/build/build-task.ts", JSON.stringify(task)]);
       return "Unity build started. Call task_status until state is success or failed.";
     },
@@ -54,7 +54,7 @@ export const buildTools: McpTool[] = [
         action: "xcode",
         projectPath: input.projectPath,
       });
-      new BuildTaskStatusStore().startXcodeBuild(resolve(XCODE_IOS_BUILD_LOG));
+      new BuildTaskStatusStore().startXcodeBuild(resolve(appPilotConfig.paths.xcodeIosBuildLog));
       spawnMcpTask(["src/mcp/task/build/build-task.ts", JSON.stringify(task)]);
       return "Xcode build started. Call task_status until state is success or failed.";
     },

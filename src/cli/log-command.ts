@@ -1,4 +1,4 @@
-import { LogStore } from "../log/log-store.ts";
+import { LogStore } from "../core/log/log-store.ts";
 import { hasFlag } from "./args.ts";
 
 export function runLogCommand(command: string | undefined, args: string[]): void {

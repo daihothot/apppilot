@@ -1,21 +1,43 @@
-import { BackendFactory } from "../../factory/backend-factory.ts";
-import { ExecutorFactory } from "../../factory/executor-factory.ts";
+import { appPilotActions } from "../../apppilot/app-pilot-actions.ts";
+import type { AppPilotGetNodeAttrsParams } from "../../apppilot/app-pilot-protocol.ts";
+import type { AppPilotLaunchOptions } from "../../apppilot/types.ts";
+import { DeviceDriverFactory } from "../../core/factory/device-driver-factory.ts";
+import { ExecutorFactory } from "../../core/factory/executor-factory.ts";
 import { listIosDevices } from "../device.ts";
 import type { McpTool } from "../mcp-tool.ts";
 import { requireNumber, requireString } from "../mcp-tool.ts";
-import type { AndroidIntentExtra, AndroidLaunchIntent, LaunchOptions, Platform } from "../../types.ts";
+import type { AndroidIntentExtra, AndroidLaunchIntent, AndroidLaunchOptions } from "../../devices/android/types.ts";
+import type { LaunchOptions, Platform } from "../../devices/types.ts";
 
 export const executeTools: McpTool[] = [
   {
     name: "execute",
-    description: "Run an executor command. Supports platform=ios/android, domain=app/action.",
+    description: "Run an executor command. Supports platform=ios/android for app/action, and platform-free apppilot actions.",
     inputSchema: {
       type: "object",
       properties: {
         platform: { type: "string", enum: ["ios", "android"] },
-        domain: { type: "string", enum: ["app", "action"] },
-        action: { type: "string", description: "app: devices/run/stop; action: tap/swipe." },
+        domain: { type: "string", enum: ["app", "action", "apppilot"] },
+        action: { type: "string", description: "app: devices/run/stop; action: tap/swipe; apppilot: status/ping/queryNodes/getNodeAttrs/call." },
         device: { type: "string", description: "iOS UDID or Android adb serial. Required except for app devices." },
+        appPilot: {
+          type: "object",
+          description: "Enable AppPilot Unity websocket launch flow for app run.",
+          properties: {
+            enabled: { type: "boolean" },
+            rootName: { type: "string" },
+            port: { type: "number" },
+            waitMs: { type: "number" },
+          },
+        },
+        params: {
+          type: "object",
+          description: "AppPilot JSON-RPC params for domain=apppilot actions.",
+        },
+        method: {
+          type: "string",
+          description: "Raw app-side JSON-RPC method for domain=apppilot action=call.",
+        },
         env: {
           type: "object",
           description: "iOS launch environment variables for app run, for example { DEBUG_MODE: 'true' }.",
@@ -52,18 +74,22 @@ export const executeTools: McpTool[] = [
         toX: { type: "number" },
         toY: { type: "number" },
       },
-      required: ["platform", "domain", "action"],
+      required: ["domain", "action"],
     },
     async call(input) {
-      const platform = requireSupportedPlatform(requireString(input, "platform"));
       const domain = requireString(input, "domain");
       const action = requireString(input, "action");
 
       if (domain === "app") {
+        const platform = requireSupportedPlatform(requireString(input, "platform"));
         return executeApp(platform, action, input);
       }
       if (domain === "action") {
+        const platform = requireSupportedPlatform(requireString(input, "platform"));
         return executeAction(platform, action, input);
+      }
+      if (domain === "apppilot") {
+        return executeAppPilot(action, input);
       }
       throw new Error("Unsupported execute domain: " + domain);
     },
@@ -75,7 +101,7 @@ async function executeApp(platform: Platform, action: string, input?: Record<str
     if (platform === "ios") {
       return listIosDevices();
     }
-    const result = await new BackendFactory().create(platform).listDevices();
+    const result = await new DeviceDriverFactory().create(platform).listDevices();
     if (result.exitCode !== 0) {
       throw new Error(result.stderr.trim() || `Failed to list ${platform} devices.`);
     }
@@ -117,11 +143,57 @@ async function executeAction(platform: Platform, action: string, input: Record<s
 }
 
 function readLaunchOptions(platform: Platform, input: Record<string, unknown>): LaunchOptions {
+  const appPilot = readAppPilotLaunchOptions(input);
   if (platform === "ios") {
-    return { env: readLaunchEnv(input) };
+    return { env: readLaunchEnv(input), appPilot };
   }
 
-  return { androidIntent: readAndroidIntent(input.intent) };
+  const androidOptions: AndroidLaunchOptions = { androidIntent: readAndroidIntent(input.intent), appPilot };
+  return androidOptions;
+}
+
+async function executeAppPilot(action: string, input: Record<string, unknown>): Promise<unknown> {
+  if (action === "status") {
+    return appPilotActions.status();
+  }
+
+  if (action === "ping") {
+    return appPilotActions.ping(readObjectParams(input));
+  }
+
+  if (action === "queryNodes") {
+    return appPilotActions.queryNodes(readObjectParams(input));
+  }
+
+  if (action === "getNodeAttrs") {
+    return appPilotActions.getNodeAttrs(readGetNodeAttrsParams(input));
+  }
+
+  if (action === "call") {
+    return appPilotActions.rawCall(requireString(input, "method"), readRpcParams(input));
+  }
+
+  throw new Error("Unsupported apppilot action: " + action);
+}
+
+function readRpcParams(input: Record<string, unknown>): unknown {
+  return input.params ?? {};
+}
+
+function readObjectParams(input: Record<string, unknown>): Record<string, unknown> {
+  const params = readRpcParams(input);
+  if (typeof params !== "object" || params === null || Array.isArray(params)) {
+    throw new Error("params must be an object.");
+  }
+  return params as Record<string, unknown>;
+}
+
+function readGetNodeAttrsParams(input: Record<string, unknown>): AppPilotGetNodeAttrsParams {
+  const params = readObjectParams(input);
+  if (typeof params.path !== "string" || params.path.length === 0) {
+    throw new Error("params.path must be a non-empty string.");
+  }
+  return params as AppPilotGetNodeAttrsParams;
 }
 
 function readLaunchEnv(input: Record<string, unknown>): Record<string, string> {
@@ -141,6 +213,24 @@ function readLaunchEnv(input: Record<string, unknown>): Record<string, string> {
     env[key] = item;
   }
   return env;
+}
+
+function readAppPilotLaunchOptions(input: Record<string, unknown>): AppPilotLaunchOptions | undefined {
+  const value = input.appPilot;
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("appPilot must be an object.");
+  }
+
+  const item = value as Record<string, unknown>;
+  return {
+    enabled: item.enabled === undefined ? true : readOptionalBoolean(item, "enabled"),
+    rootName: readOptionalString(item, "rootName"),
+    port: readOptionalNumber(item, "port"),
+    waitMs: readOptionalNumber(item, "waitMs"),
+  };
 }
 
 function readAndroidIntent(value: unknown): AndroidLaunchIntent | undefined {
@@ -206,6 +296,24 @@ function readOptionalStringArray(input: Record<string, unknown>, key: string): s
   if (value === undefined || value === null) return undefined;
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`intent.${key} must be a string array.`);
+  }
+  return value;
+}
+
+function readOptionalBoolean(input: Record<string, unknown>, key: string): boolean | undefined {
+  const value = input[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "boolean") {
+    throw new Error(`appPilot.${key} must be a boolean.`);
+  }
+  return value;
+}
+
+function readOptionalNumber(input: Record<string, unknown>, key: string): number | undefined {
+  const value = input[key];
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`appPilot.${key} must be a finite number.`);
   }
   return value;
 }

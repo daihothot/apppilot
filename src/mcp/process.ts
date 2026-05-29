@@ -2,15 +2,15 @@ import { spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { APPPILOT_HOME, LOG_ROOT } from "../constants.ts";
+import { appPilotConfig } from "../config/app-pilot-config.ts";
 
 export function spawnMcpTask(args: string[]): void {
   if (isSourceRuntime()) {
-    spawnDetached("bun", toSourceTaskArgs(args), APPPILOT_HOME);
+    spawnDetached("bun", toSourceTaskArgs(args), appPilotConfig.paths.home);
     return;
   }
 
-  spawnDetached(readCurrentExecutable(), toPackagedTaskArgs(args), APPPILOT_HOME);
+  spawnDetached(readCurrentExecutable(), toPackagedTaskArgs(args), appPilotConfig.paths.home);
 }
 
 function isSourceRuntime(): boolean {
@@ -42,9 +42,9 @@ function readCurrentExecutable(): string {
 }
 
 function spawnDetached(command: string, args: string[], cwd: string): void {
-  mkdirSync(APPPILOT_HOME, { recursive: true });
-  mkdirSync(LOG_ROOT, { recursive: true });
-  const taskLog = openSync(join(LOG_ROOT, "apppilot-task.log"), "a");
+  mkdirSync(appPilotConfig.paths.home, { recursive: true });
+  mkdirSync(appPilotConfig.paths.logRoot, { recursive: true });
+  const taskLog = openSync(join(appPilotConfig.paths.logRoot, "apppilot-task.log"), "a");
   const child = spawn(command, args, {
     cwd,
     detached: true,

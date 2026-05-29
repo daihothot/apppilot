@@ -1,4 +1,4 @@
-import { BackendFactory } from "../factory/backend-factory.ts";
+import { DeviceDriverFactory } from "../core/factory/device-driver-factory.ts";
 
 export interface IosDeviceInfo {
   ConnectionType?: string;
@@ -9,8 +9,8 @@ export interface IosDeviceInfo {
 }
 
 export async function listIosDevices(): Promise<IosDeviceInfo[]> {
-  const backend = new BackendFactory().create("ios");
-  const result = await backend.listDevices();
+  const deviceDriver = new DeviceDriverFactory().create("ios");
+  const result = await deviceDriver.listDevices();
   if (result.exitCode !== 0) {
     throw new Error(result.stderr.trim() || "Failed to list iOS devices.");
   }

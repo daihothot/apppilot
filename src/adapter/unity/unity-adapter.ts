@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { UNITY_ANDROID_APK_PATH, UNITY_ANDROID_ARTIFACT_DIR, UNITY_IOS_XCODE_DIR } from "../../constants.ts";
-import type { BuildArtifact, BuildConfiguration, Platform } from "../../types.ts";
-import { LogStore } from "../../log/log-store.ts";
-import { BuildArtifactStore } from "../../artifact/build-artifact-store.ts";
+import { appPilotConfig } from "../../config/app-pilot-config.ts";
+import { BuildArtifactStore } from "../../core/artifact/build-artifact-store.ts";
+import type { BuildArtifact, BuildConfiguration } from "../../core/build/types.ts";
+import { LogStore } from "../../core/log/log-store.ts";
+import type { Platform } from "../../devices/types.ts";
 import { UnityAndroidBuilder } from "./android/unity-android-builder.ts";
 import { UnityIosBuilder } from "./ios/unity-ios-builder.ts";
 import { UnityXcodeBuilder } from "./ios/unity-xcode-builder.ts";
@@ -46,12 +47,12 @@ export class UnityAdapter {
     }
 
     const configuration: BuildConfiguration = options.debug ? "debug" : "release";
-    if (options.refreshBuild && existsSync(UNITY_IOS_XCODE_DIR)) {
-      this.log.log("refreshing unity ios xcode artifact", { path: UNITY_IOS_XCODE_DIR });
-      rmSync(UNITY_IOS_XCODE_DIR, { recursive: true, force: true });
+    if (options.refreshBuild && existsSync(appPilotConfig.paths.unityIosXcodeDir)) {
+      this.log.log("refreshing unity ios xcode artifact", { path: appPilotConfig.paths.unityIosXcodeDir });
+      rmSync(appPilotConfig.paths.unityIosXcodeDir, { recursive: true, force: true });
     }
 
-    mkdirSync(UNITY_IOS_XCODE_DIR, { recursive: true });
+    mkdirSync(appPilotConfig.paths.unityIosXcodeDir, { recursive: true });
 
     if (options.buildRes) {
       this.log.log("unity build resources requested");
@@ -61,7 +62,7 @@ export class UnityAdapter {
       await this.iosBuilder.build({
         projectPath,
         configuration,
-        outputPath: UNITY_IOS_XCODE_DIR,
+        outputPath: appPilotConfig.paths.unityIosXcodeDir,
         append: !options.refreshBuild,
       });
     } else {
@@ -74,7 +75,7 @@ export class UnityAdapter {
       platform: "ios",
       configuration,
       projectPath,
-      xcodeProjectPath: UNITY_IOS_XCODE_DIR,
+      xcodeProjectPath: appPilotConfig.paths.unityIosXcodeDir,
       appPath: this.findAppPath(),
       bundleId,
       builtAt: new Date().toISOString(),
@@ -96,12 +97,12 @@ export class UnityAdapter {
     }
 
     const configuration: BuildConfiguration = options.debug ? "debug" : "release";
-    if (options.refreshBuild && existsSync(UNITY_ANDROID_ARTIFACT_DIR)) {
-      this.log.log("refreshing unity android artifact", { path: UNITY_ANDROID_ARTIFACT_DIR });
-      rmSync(UNITY_ANDROID_ARTIFACT_DIR, { recursive: true, force: true });
+    if (options.refreshBuild && existsSync(appPilotConfig.paths.unityAndroidArtifactDir)) {
+      this.log.log("refreshing unity android artifact", { path: appPilotConfig.paths.unityAndroidArtifactDir });
+      rmSync(appPilotConfig.paths.unityAndroidArtifactDir, { recursive: true, force: true });
     }
 
-    mkdirSync(UNITY_ANDROID_ARTIFACT_DIR, { recursive: true });
+    mkdirSync(appPilotConfig.paths.unityAndroidArtifactDir, { recursive: true });
 
     if (options.buildRes) {
       this.log.log("unity android build resources requested");
@@ -111,7 +112,7 @@ export class UnityAdapter {
       await this.androidBuilder.build({
         projectPath,
         configuration,
-        outputPath: UNITY_ANDROID_APK_PATH,
+        outputPath: appPilotConfig.paths.unityAndroidApkPath,
       });
     } else {
       this.log.log("unity android build skipped; recording context only", { projectPath });
@@ -123,7 +124,7 @@ export class UnityAdapter {
       platform: "android",
       configuration,
       projectPath,
-      appPath: UNITY_ANDROID_APK_PATH,
+      appPath: appPilotConfig.paths.unityAndroidApkPath,
       bundleId,
       builtAt: new Date().toISOString(),
     };
@@ -165,7 +166,7 @@ export class UnityAdapter {
   }
 
   private findAppPath(): string {
-    return join(UNITY_IOS_XCODE_DIR, "build", "App.app");
+    return join(appPilotConfig.paths.unityIosXcodeDir, "build", "App.app");
   }
 
   private readBundleId(projectPath: string, platform: Platform): string | null {
