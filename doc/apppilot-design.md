@@ -173,7 +173,7 @@ Agent 在验证任务中负责理解输入、辅助生成或调整执行计划�
 
 AppPilot 基于 `ValidatorAsset`、run options、目标设备、构建配置、证据要求和运行策略，编译或命中内部 `RuntimeExecutionPlan`。
 
-`RuntimeExecutionPlan` 是可持久化、可序列化、可缓存的内部执行计划。它把外部声明式步骤转换为 runtime step、事件绑定、timer 模板、观察窗口和工具调用约束。它不属于外部资产契约，也不得原样写回为外部资产。
+`RuntimeExecutionPlan` 是可持久化、可序列化、可缓存的内部执行计划。它把外部声明式步骤转换为 runtime step、ReAct 任务规约或确定性步骤规约、timer 模板、观察窗口和工具调用约束。它不属于外部资产契约，也不得原样写回为外部资产。
 
 AppPilot 编译流程：
 
@@ -465,7 +465,7 @@ type RuntimeExecutionStep = {
 
 - `RuntimeExecutionPlan` 缓存命中后，AppPilot 可以跳过外部 `ValidatorAsset` 的重新解析和 step 编译。
 - 缓存直接复用必须同时满足 `flowIdentityHash`、`validatorAssetHash`、`planSchemaVersion`、`compilerVersion` 和 `targetSignatureHash` 完全一致。
-- 缓存态 `RuntimeExecutionPlan` 不保存 run 内事件序号、timer 状态、step consumption、checkpoint 或 artifact 引用。
+- 缓存态 `RuntimeExecutionPlan` 不保存 run 内事件序号、timer 状态、事件处理记录、checkpoint 或 artifact 引用。
 - `targetSignatureHash` 必须使用 `TargetSignatureInput` 生成 canonical JSON 后计算 hash。canonical JSON 规则是：移除 `undefined` 字段、对象 key 按字典序排序、字符串数组去重后按字典序排序、布尔和数字保持原始类型，再对 UTF-8 JSON 字符串计算 `sha256`。
 - 每个 `react_task` 的 `successCriteria.verificationRules` 必须至少包含一条 `required: true` 的规则，否则 plan 编译失败。
 - `verificationRules` 决定 step 是否通过；`expectedEvidence` 只表达 step 通过后的诊断或审计证据，不参与通过判定。
@@ -1679,7 +1679,7 @@ type VerificationFeedback = {
 
 `unknownRules` 包含 required 规则时，step 不能进入 `step_completed`。Runtime 应把 `VerificationFeedback` 回喂给 ReAct 循环，Agent 可以继续尝试、换策略或通过 `internal.react.declare_blocked` 声明 blocked。仅 context 规则 unknown 时，不阻断 step completed，但必须记录到诊断信号或审计材料中。
 
-verification feedback 作为一轮 ReAct observation 计入 `maxIterations`，避免把 Runtime 验证当成免费探测工具。
+verification feedback 默认作为一轮 ReAct observation 计入 `maxIterations`，避免把 Runtime 验证当成免费探测工具。`ReactPolicy.countVerificationAsIteration` 控制这条规则的开关，默认必须为 `true`；如果策略上选择关闭，Runtime 必须在 plan 编译诊断中声明替代的预算保护机制，否则编译失败。
 
 ### 4.5 Step 退出态
 
@@ -2319,8 +2319,8 @@ type DbRunEventRecord = {
   occurredAt: string;
   // 事件写入数据库时间
   receivedAt: string;
-  // 事件是否已被至少一个 step 消费
-  consumed: boolean;
+  // 事件是否已被 Runtime 处理（step 级或系统级）
+  processed: boolean;
 };
 
 // 数据库中的 runtime 健康状态记录
@@ -4105,8 +4105,9 @@ type ReactPolicy = {
   defaultMaxIterations: number;
   // 单次 observation 默认最大等待时间
   defaultObservationTimeoutMs: number;
-  // verification 失败回喂是否作为一轮迭代消耗 maxIterations 预算
-  countVerificationAsIteration: true;
+  // verification 失败回喂是否作为一轮迭代消耗 maxIterations 预算；默认 true
+  // 设为 false 时 Runtime 必须在文档说明中显式声明替代的预算保护机制
+  countVerificationAsIteration: boolean;
   // 是否持久化完整推理过程；默认 false，仅在 debug 或合规审计需要时打开
   persistFullReasoning: boolean;
   // 同一 step 内连续 verification 全失败次数上限；超过即提前转 step_failed
