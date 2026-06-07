@@ -55,7 +55,30 @@ ValidatorAsset + run options
 
 AppPilot 采用本地优先的运行方式。运行文件写入 `~/.apppilot`。资产导入、资产发布和长期治理由调用方或外部系统基于 AppPilot 产出的回流与写回材料完成。
 
-### 2.2 外部输入
+### 2.2 主链路关键门禁
+
+主链路门禁用于区分“无法开始或无法到达验证触点”和“到达验证触点后的验证失败”。命中 run 级门禁时，`Validation Task` 必须立即转入 `blocked`，不得继续执行后续阶段；命中 step 级门禁时，当前 step 必须转入 `step_blocked`，不得转入 `step_failed`。
+
+以下条件任一满足，run 必须立即转入 `blocked`：
+
+- 外部输入契约缺少关键字段，无法创建有效 `Validation Task`：`blocked: INPUT_CONTRACT_INVALID`
+- Codex Agent SDK 无法初始化：`blocked: AGENT_INIT_FAILED`
+- `RuntimeExecutionPlan` 编译失败：`blocked: PLAN_COMPILE_FAILED`
+- `RuntimeStepGraphDefinition` 合法性校验失败：`blocked: GRAPH_INVALID`
+- run 目录或 SQLite 状态数据库无法初始化：`blocked: STATE_STORE_INIT_FAILED`
+- 权限不足导致关键内部工具无法授权：`blocked: TOOL_AUTHORIZATION_FAILED`
+- 目标设备不存在或不可用：`blocked: DEVICE_NOT_FOUND`
+- 构建产物不存在且构建失败：`blocked: BUILD_FAILED`
+
+以下条件任一满足，当前 step 必须转入 `step_blocked`：
+
+- Agent 主动声明 `availableTools` 不足，无法达成当前 step 的 `successCriteria`
+- Agent 主动声明 `successCriteria` 的前提条件不成立
+- required evidence channel 系统性不可用，导致 Runtime 无法完成必要验证
+
+这些门禁不表达验证事实失败，只表达 AppPilot 无法继续可靠执行或无法到达验证触点。所有门禁必须写入任务状态、诊断信息和审计材料；如果已产生证据或 artifact，仍必须保留用于恢复和复盘。
+
+### 2.3 外部输入
 
 `ValidatorAsset` 是外部系统提供给 AppPilot 的稳定输入契约。它描述验证意图、声明式流程、证据要求和结果解释口径，不直接暴露 AppPilot 内部 runtime step、Run Event Bus、timer、SQLite checkpoint 或具体 MCP tool。
 
@@ -150,7 +173,7 @@ run options 不在 `ValidatorAsset` 中展开为稳定字段。它只作为 `Val
 
 AppPilot 运行所需的启动参数、构建参数、多实例目标、App WebSocket 配置、设备控制配置等，不写入 `ValidatorAsset` 输入契约。它们应由 run options、`RuntimeExecutionPlan` 或内部工具配置承载。
 
-### 2.3 Agent Session
+### 2.4 Agent Session
 
 Codex Agent SDK 是 AppPilot 的内部执行引擎，不是外部资产契约。AppPilot 不暴露 Codex Agent SDK 的内部会话协议，但会把 agent 收到的输入、输出的计划或反馈、调用过的工具、执行过的证据检查和生成的人工确认提示保存为 run 内审计材料。
 
@@ -172,7 +195,7 @@ Agent 在验证任务中负责理解输入、辅助生成或调整执行计划�
 
 恢复时，AppPilot 以本地状态数据库和 run 目录为准。如果 Codex Agent SDK session 仍可恢复，则绑定原 session 继续；如果不能恢复，则用已落盘的输入快照、checkpoint、event cursor 和证据索引创建新的 Codex Agent SDK session，并把前一次 session 记录为历史审计材料。
 
-### 2.4 Runtime Plan
+### 2.5 Runtime Plan
 
 AppPilot 基于 `ValidatorAsset`、run options、目标设备、构建配置、证据要求和运行策略，编译或命中内部 `RuntimeExecutionPlan`。
 
@@ -578,7 +601,7 @@ type RuntimeExecutionStep = {
 - graph 只决定 step 间转移，不决定 step 是否通过。step 是否通过仍由 Runtime 独立验证 `verificationRules`。
 - 图层不支持并行节点、join、reducer 或 graph-level parallel branch。多设备仍由 `ValidationInstance` 层支持；graph 是线性的 step 编排，每个 step 通过 `scope` 声明作用于某个 instance、全部 instance 或 run 级聚合。
 
-### 2.5 Run 聚合与结果解释
+### 2.6 Run 聚合与结果解释
 
 run 级聚合只汇总本次 run 内所有 instance 的执行结果、证据质量、诊断信号和观察到的覆盖组合。
 
@@ -733,7 +756,7 @@ type RunAggregationResult = {
 };
 ```
 
-### 2.6 回流与写回
+### 2.7 回流与写回
 
 人工确认后，AppPilot 生成可供外部系统消费的回流与写回材料，包括执行结果、证据摘要、结构化执行事实、诊断信号、本机运行摘要和 Validator Asset 更新候选。
 
@@ -4455,6 +4478,18 @@ type HumanConfirmationRecord = {
 type AppPilotError = {
   // 稳定错误码
   code:
+    // 外部输入契约缺少关键字段或无法创建有效 Validation Task
+    | "INPUT_CONTRACT_INVALID"
+    // Codex Agent SDK 初始化失败
+    | "AGENT_INIT_FAILED"
+    // RuntimeExecutionPlan 编译失败
+    | "PLAN_COMPILE_FAILED"
+    // RuntimeStepGraphDefinition 合法性校验失败
+    | "GRAPH_INVALID"
+    // run 目录或 SQLite 状态数据库初始化失败
+    | "STATE_STORE_INIT_FAILED"
+    // 关键内部工具权限无法授权
+    | "TOOL_AUTHORIZATION_FAILED"
     // 构建失败
     | "BUILD_FAILED"
     // 未找到目标设备
