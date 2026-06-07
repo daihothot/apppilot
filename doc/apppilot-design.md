@@ -11,7 +11,7 @@ AppPilot 负责：
 - 按结构化 `ValidatorAsset` 执行 iOS、Android 和可选 Editor 验证流程。
 - 通过 Codex Agent SDK 控制验证任务，由 agent 理解输入、编排执行、检查证据、生成反馈并提示人工确认。
 - 通过本地 SQLite 状态数据库管理验证任务状态、检查点、重试、取消、恢复索引和审计事件。
-- 通过本地 Run Event Bus 统一承载 scheduler、device watcher、log watcher、App WebSocket、外部输入和人工确认产生的 run 内事件。
+- 通过本地 Run Event Bus 承载 step 级、系统级、timer / observation window、外部输入和人工确认事件；日志、App WebSocket、UI 观测和截图默认作为证据或 ReAct observation 记录。
 - 在单次 run 内执行定时等待、观察窗口和事件驱动 step；这些机制只推进当前验证流程，不创建外部长期调度。
 - 安装、启动、停止和控制真实设备或 Unity Editor 会话。
 - 采集日志、App 侧结构化信号、业务事件、App WebSocket 证据、API/SQL 结果、线上数据快照、UI 观测、截图和设备状态。
@@ -44,7 +44,7 @@ ValidatorAsset + run options
   -> 构建 App 或复用构建产物
   -> 每个 instance 执行 install / launch / attach
   -> 每个 instance 连接 device / Editor / app-side RPC / app_ws / evidence tools
-  -> Runtime step 消费事件 / 产出事件 / 创建 timer 或进入观察窗口
+  -> Runtime 执行 ReAct step / 处理事件 / 创建 timer 或进入观察窗口
   -> 采集证据并生成 ExecutionResult / EvidenceBundle / ExecutionFact
   -> run 级聚合与诊断
   -> agent 检查证据 / 解释结果 / 生成反馈 / 提示人工确认
@@ -181,7 +181,7 @@ AppPilot 编译流程：
 ValidatorAsset.executionSteps: ValidatorFlowStep[]
   -> Agent / plan compiler 理解外部声明式意图
   -> RuntimeExecutionPlan
-  -> RuntimeExecutionStep / StepEventBinding / RunTimer / ObservationWindowConfig
+  -> RuntimeExecutionStep / ReactTaskSpec / RunTimer / ObservationWindowConfig
   -> device driver / app rpc / evidence collector / scheduler / event bus
 ```
 
@@ -249,24 +249,40 @@ type EvidenceRequirement = {
   scope?: "run" | "instance" | "step";
   // 关联的验证事实 ID 列表
   validationFactIds?: string[];
-  // 证据沉默多久后触发心跳；为空时使用全局策略
+  // 证据通道长时间无信号的诊断阈值；用于 ReAct 观察和诊断，不直接发布 Event Bus 心跳
   stallThresholdMs?: number;
 };
 
 // 内部 runtime 执行步骤类型
 type RuntimeExecutionStepKind =
-  // 执行动作，例如安装、启动、点击或 App RPC
-  | "action"
-  // 采集证据，例如日志、数据快照、截图或设备状态
-  | "collect_evidence"
-  // 基于已采集证据执行断言
-  | "assertion"
-  // 等待一个或多个事件
-  | "wait_event"
-  // 在一段时间内持续观察和采集证据
-  | "observe_window"
-  // 等待人工确认
-  | "human_confirmation";
+  // ReAct 任务，由 Agent 在授权工具内自主推理达成 successCriteria
+  | "react_task"
+  // Runtime 直接执行的确定性步骤，不进入 ReAct 循环
+  | "runtime_action";
+
+// Runtime 验证规则
+type VerificationRule = {
+  // 规则 ID，在同一个 step 内唯一
+  ruleId: string;
+  // 证据通道
+  channel: EvidenceChannel;
+  // 证据选择器，例如日志关键字、UI query、App WebSocket JSON path、API endpoint 或 SQL query
+  selector: string;
+  // 规则是否必须通过；required 为 true 的规则决定 step 是否可以通过
+  required: boolean;
+  // 规则用途
+  purpose: "assertion" | "context";
+  // 规则可读描述
+  description?: string;
+};
+
+// step 完成条件；Runtime 只能依据 verificationRules 判定 step 是否通过
+type StepSuccessCriteria = {
+  // 给 Agent 看的意图描述，仅用于驱动 ReAct 推理；Runtime 不得依据该字段判定 step 是否通过
+  intentDescription: string;
+  // Runtime 独立验证规则；必须至少包含一条 required 为 true 的规则
+  verificationRules: VerificationRule[];
+};
 
 // 观察窗口配置
 type ObservationWindowConfig = {
@@ -300,6 +316,36 @@ type ObservationWindowEventPayload = {
   scheduledAt?: string;
   // 实际发生时间
   occurredAt: string;
+};
+
+// ReAct 任务规约
+type ReactTaskSpec = {
+  // 给 Agent 看的意图描述，用于驱动 ReAct 推理
+  intent: string;
+  // Runtime 独立验证的完成条件
+  successCriteria: StepSuccessCriteria;
+  // 授权给 Agent 的工具名称列表
+  availableTools: string[];
+  // ReAct 循环最大轮数
+  maxIterations: number;
+  // 单次 observation 最大等待时间
+  observationTimeoutMs?: number;
+  // 该 step 的预算上限，例如 token、cost 或 time
+  stepBudget?: Record<string, number>;
+};
+
+// Runtime 直接执行的确定性步骤规约
+type RuntimeActionSpec = {
+  // 确定性步骤子类型
+  kind: "wait" | "observe_window" | "collect_evidence" | "human_confirmation";
+  // 等待时长；kind 为 wait 时使用
+  durationMs?: number;
+  // 观察窗口配置；kind 为 observe_window 时使用
+  observe?: ObservationWindowConfig;
+  // 证据采集要求；kind 为 collect_evidence 时使用
+  collect?: EvidenceRequirement[];
+  // 人工确认提示类型；kind 为 human_confirmation 时使用
+  humanPromptType?: "confirm_result" | "confirm_evidence_scope" | "confirm_writeback_material" | "manual_intervention";
 };
 
 // 目标环境签名输入；用于生成 RuntimePlanCacheKey.targetSignatureHash
@@ -352,8 +398,6 @@ type RuntimeTimerTemplate = {
   timerTemplateId: string;
   // 关联的内部 runtime step ID
   stepId: string;
-  // 关联事件绑定 ID
-  bindingId?: string;
   // timer 调度方式
   schedule: RunTimer["schedule"];
   // 到期后发布的事件类型
@@ -384,8 +428,6 @@ type RuntimeExecutionPlan = {
   agentPlanRef?: string;
   // 内部 runtime 执行步骤列表
   steps: RuntimeExecutionStep[];
-  // 计划级事件绑定列表
-  eventBindings?: StepEventBinding[];
   // 计划级 timer 模板列表；不得保存 run 内 timer 状态
   timerTemplates?: RuntimeTimerTemplate[];
   // 计划级证据要求列表；step 可以继承或覆盖
@@ -410,41 +452,14 @@ type RuntimeExecutionStep = {
   validatorStepId?: string;
   // 步骤类型
   kind: RuntimeExecutionStepKind;
-  // 步骤动作语义；kind 为 action、collect_evidence 或 assertion 时使用
-  action?:
-    | "build"
-    | "install"
-    | "launch"
-    | "stop"
-    | "tap"
-    | "swipe"
-    | "wait"
-    | "app_rpc"
-    | "collect_evidence"
-    | "assert_observation";
-  // 执行该步骤时使用的具体内部工具名称
-  tool?: string;
-  // 传给工具或 driver 的结构化输入
-  inputs?: Record<string, unknown>;
-  // 该步骤消费的事件绑定列表
-  consumes?: StepEventBinding[];
-  // 该步骤可能主动产出的事件声明列表
-  emits?: StepEventProduction[];
-  // 该步骤使用的 run 内定时器配置
-  timer?: RunTimer["schedule"];
-  // 该步骤的观察窗口配置
-  observe?: ObservationWindowConfig;
-  // 该步骤预期采集到的证据
+  // ReAct 任务规约；kind 为 react_task 时必填
+  reactTask?: ReactTaskSpec;
+  // Runtime 确定性步骤规约；kind 为 runtime_action 时必填
+  runtimeAction?: RuntimeActionSpec;
+  // step 通过后仍要采集或绑定的诊断、审计证据；不参与 step 通过判定
   expectedEvidence?: EvidenceRequirement[];
   // 步骤超时时间
   timeoutMs?: number;
-  // 步骤级重试策略
-  retry?: {
-    // 最大尝试次数
-    attempts: number;
-    // 重试间隔
-    backoffMs?: number;
-  };
 };
 ```
 
@@ -452,6 +467,8 @@ type RuntimeExecutionStep = {
 - 缓存直接复用必须同时满足 `flowIdentityHash`、`validatorAssetHash`、`planSchemaVersion`、`compilerVersion` 和 `targetSignatureHash` 完全一致。
 - 缓存态 `RuntimeExecutionPlan` 不保存 run 内事件序号、timer 状态、step consumption、checkpoint 或 artifact 引用。
 - `targetSignatureHash` 必须使用 `TargetSignatureInput` 生成 canonical JSON 后计算 hash。canonical JSON 规则是：移除 `undefined` 字段、对象 key 按字典序排序、字符串数组去重后按字典序排序、布尔和数字保持原始类型，再对 UTF-8 JSON 字符串计算 `sha256`。
+- 每个 `react_task` 的 `successCriteria.verificationRules` 必须至少包含一条 `required: true` 的规则，否则 plan 编译失败。
+- `verificationRules` 决定 step 是否通过；`expectedEvidence` 只表达 step 通过后的诊断或审计证据，不参与通过判定。
 
 ### 2.5 Run 聚合与结果解释
 
@@ -1161,7 +1178,7 @@ function buildRuntimePlanPrompt(
     "不要输出 Markdown，不要解释过程，不要写外部资产，不要生成 ValidationWritebackPackage。",
     "RuntimeExecutionPlan 是 AppPilot 内部执行计划，不属于外部 ValidatorAsset 契约。",
     "一个 run 只表达一个验证场景；多个 targetInstances 只表示同一场景下的多设备或 Editor 执行。",
-    "timer、hook、App WebSocket、日志 watcher、device watcher 和人工确认都必须通过 Run Event Bus 表达。",
+    "Run Event Bus 只表达 step 级、系统级、timer / observation window、外部输入和人工确认事件；App WebSocket、日志 watcher、UI 观测和截图默认编译为证据采集或 ReAct observation。",
     "iOS UI 控制必须使用 WDA，Android UI 控制必须使用 uiautomator2。",
     "证据要求必须规范化为 EvidenceRequirement，并绑定到 plan 或 step 的 expectedEvidence。",
     "可缓存 plan 不得包含 run 内事件序号、timer 状态、checkpoint 状态或 artifact 实例引用。",
@@ -1292,19 +1309,19 @@ async function buildRuntimeExecutionPlanWithCodex(
 
 Agent 在 run 内响应三类事件：
 
-- 进度事件：推进执行计划，进入下一步动作、等待、观察或证据采集。
-- 心跳事件：检查预算、卡顿、证据沉默、scheduler 延迟和事件积压。
-- 异常事件：在重试、降级、停止和提示人工之间做决策。
+- 进度事件：理解 step 级进展，例如 `step_started`、`step_completed` 或 `step_blocked`，并给出下一步建议；原子动作不通过 Event Bus 驱动。
+- 心跳事件：检查 ReAct 循环是否长时间没有新迭代、step 预算和 run 预算是否接近耗尽。
+- 异常事件：对 step 级失败、工具系统性不可用、Runtime 状态不一致或 run 级预算耗尽做恢复决策。
 
 ### 3.5 Agent Review
 
 证据产出后，agent 检查证据是否充分、结果解释是否成立、失败是否可能来自环境或不稳定因素，并生成反馈。
 
-agent review 可以建议补采证据、重试步骤、降级执行、停止 run 或提示人工介入，但这些建议仍必须通过 AppPilot runtime 记录，并进入人工确认流程。Agent 的检查反馈不能替代人工确认。
+agent review 可以建议补采证据、重新执行 ReAct step、停止 run 或提示人工介入，但这些建议仍必须通过 AppPilot runtime 记录，并进入人工确认流程。Agent 的检查反馈不能替代人工确认。
 
 ### 3.6 恢复规则
 
-Agent session 恢复以 AppPilot 本地状态为准。恢复时必须先读取 SQLite checkpoint、Run Event Bus 游标、未完成 timer、已消费事件记录、证据索引和 agent 历史输出。
+Agent session 恢复以 AppPilot 本地状态为准。恢复时必须先读取 SQLite checkpoint、Run Event Bus 游标、未完成 timer、已处理事件记录、证据索引和 agent 历史输出。
 
 如果原 Codex Agent SDK session 可恢复，AppPilot 绑定原 session 并继续执行。如果原 session 不可恢复，AppPilot 创建新的 Codex Agent SDK session，并把历史 session 的输入、输出、工具调用、检查反馈和人工确认提示作为上下文恢复材料。
 
@@ -1546,20 +1563,178 @@ type AgentHumanPrompt = {
 };
 ```
 
-## 4. Event Bus
+## 4. ReAct 执行层
 
-### 4.1 事件总线边界
+### 4.1 执行层边界
 
-Run Event Bus 是单次 `ValidationRun` 内的本地事件总线。它只记录和分发 run 内发生过的事实，例如定时器到期、日志匹配、App 状态到达、设备安装、外部 hook 输入到达或人工确认完成。事件本身不直接表达 run 的最终通过或失败；验证结论由 runtime step、extractor、result interpretation 和 agent review 基于证据共同判断。
+ReAct 执行层负责执行 `RuntimeExecutionStep.kind: "react_task"` 的步骤。每个 ReAct step 都是一个任务目标，Agent 在 Runtime 授权的原子工具内执行 `Reasoning -> Acting -> Observing` 循环，直到 Runtime 独立验证 `successCriteria.verificationRules` 通过，或达到退出态。
+
+ReAct 内部 observation 不写入 Run Event Bus。找不到按钮、坐标不准、工具返回空、单次工具调用错误、verification feedback 都只是 ReAct 循环的 observation，由 Agent 在下一轮继续调整策略。
+
+Run Event Bus 只承载 step 级、系统级和外部输入级事件。ReAct step 失败、超时、被阻塞或通过 Runtime 验证时，Runtime 才发布 step 级事件。
+
+每一轮 ReAct 迭代必须持久化为 `ReactIterationRecord`，写入 run 目录的 `agent/` 目录，并把产生的 artifact 同步登记到 Evidence Store。默认只保存 `reasoningSummary`，不要求保存完整内部思维链；`fullReasoningRef` 仅在策略允许且 SDK 可提供时写入。
+
+step 是否完成只由 Runtime 重新采证并验证 `verificationRules` 决定。Agent 自评、自然语言声明或 `successCriteria.intentDescription` 都不能作为通过结论。
+
+### 4.2 执行流程
+
+```text
+RuntimeExecutionStep(kind: react_task)
+  -> 初始化 ReAct 循环：intent + successCriteria.intentDescription + availableTools + budget
+  -> Agent 执行 reasoningSummary / action / observation
+  -> 每轮写入 ReactIterationRecord
+  -> Agent 认为已完成或 Runtime 到达检查点
+  -> Runtime 独立采集证据并验证 verificationRules
+       -> 通过：发布 step_completed
+       -> 不通过：生成 VerificationFeedback，作为下一轮 observation
+       -> 无法判定：根据 unknownRules 决定继续、blocked 或诊断记录
+  -> 循环直到 runtime_verified、max_iterations、timeout 或 agent_blocked
+```
+
+普通工具失败不是异常。只有 ReAct 预算耗尽、step 超时、Agent 主动声明 blocked、工具系统性不可用或 Runtime 状态不一致，才进入 step 级失败、blocked 或异常路径。
+
+### 4.3 ReAct 迭代记录 Schema
+
+```ts
+// 单轮 ReAct 迭代记录，强制持久化到 agent/ 目录
+type ReactIterationRecord = {
+  // 迭代 ID
+  iterationId: string;
+  // 关联步骤 ID
+  stepId: string;
+  // 单次验证 run ID
+  runId: string;
+  // 验证实例 ID；run 级 step 为空
+  instanceId?: string;
+  // 同一 step 内递增的迭代序号
+  iterationNumber: number;
+  // 本轮决策的可审计摘要；说明为什么选择该工具、期望达成什么，不保存完整内部思维链
+  reasoningSummary: string;
+  // 完整推理过程引用；仅在 ReactPolicy.persistFullReasoning 为 true 且 SDK 可提供时写入
+  fullReasoningRef?: string;
+  // 调用的工具名称
+  action: string;
+  // 工具输入
+  actionInput: unknown;
+  // observation 来源
+  observationSource: "tool_call" | "verification_feedback";
+  // 给下一轮 Agent 看的简要 observation 文本
+  observation: string;
+  // 大体积或结构化 observation 引用
+  observationRef?: string;
+  // 该轮产出的 artifact 引用列表
+  artifactRefs?: string[];
+  // 工具调用本身的错误；这是 ReAct observation，不是 step 级失败
+  toolError?: {
+    // 工具错误码
+    code: string;
+    // 工具错误描述
+    message: string;
+  };
+  // Runtime 验证反馈；observationSource 为 verification_feedback 时填写
+  verificationFeedback?: VerificationFeedback;
+  // 迭代开始时间
+  startedAt: string;
+  // 迭代结束时间
+  finishedAt: string;
+  // 写入时间
+  persistedAt: string;
+};
+```
+
+### 4.4 验证反馈 Schema
+
+```ts
+// Runtime 验证 successCriteria 的反馈
+type VerificationFeedback = {
+  // 验证尝试 ID，同一 step 内多次验证可追溯
+  verificationAttemptId: string;
+  // 验证执行时间
+  performedAt: string;
+  // 通过的规则 ID 列表
+  passedRules: string[];
+  // 未通过的规则列表
+  failedRules: Array<{
+    // 规则 ID
+    ruleId: string;
+    // 期望描述
+    expected: string;
+    // 实际采集到的描述
+    actual: string;
+    // 采集到的原始证据引用
+    evidenceRef?: string;
+  }>;
+  // 因采证失败而无法判定的规则列表
+  unknownRules?: Array<{
+    // 规则 ID
+    ruleId: string;
+    // 采证失败原因
+    reason: string;
+    // 采证错误码
+    errorCode?: string;
+  }>;
+};
+```
+
+`unknownRules` 包含 required 规则时，step 不能进入 `step_completed`。Runtime 应把 `VerificationFeedback` 回喂给 ReAct 循环，Agent 可以继续尝试、换策略或通过 `internal.react.declare_blocked` 声明 blocked。仅 context 规则 unknown 时，不阻断 step completed，但必须记录到诊断信号或审计材料中。
+
+verification feedback 作为一轮 ReAct observation 计入 `maxIterations`，避免把 Runtime 验证当成免费探测工具。
+
+### 4.5 Step 退出态
+
+```ts
+// ReAct 任务退出原因
+type StepReactExitReason =
+  // Runtime 独立验证通过
+  | "runtime_verified"
+  // ReAct 预算耗尽
+  | "max_iterations"
+  // step 超时
+  | "timeout"
+  // Agent 主动声明前提不成立或无法继续
+  | "agent_blocked";
+
+// Agent 声明 blocked 的原因分类
+type AgentBlockedReason =
+  // App 闪退或不可用
+  | "app_crashed"
+  // 目标 UI 元素被隐藏或不存在
+  | "ui_unreachable"
+  // 授权工具集不足以完成 successCriteria
+  | "tool_missing"
+  // ValidatorAsset 描述的前提条件未达成
+  | "precondition_failed"
+  // 其他原因，必须配合自由文本说明
+  | "other";
+
+// Agent 主动声明 blocked 的输入
+type ReactDeclareBlockedInput = {
+  // blocked 原因分类
+  reason: AgentBlockedReason;
+  // 可读说明
+  message: string;
+  // 支撑 blocked 判断的证据引用
+  evidenceRefs?: string[];
+};
+```
+
+Agent 只能通过 `internal.react.declare_blocked` 声明 blocked。该工具的语义是退出当前 ReAct 循环，并由 Runtime 将 step 转为 `step_blocked`，再发布 step 级事件。它不是普通 observation，也不参与后续 ReAct 推理。
+
+## 5. Event Bus
+
+### 5.1 事件总线边界
+
+Run Event Bus 是单次 `ValidationRun` 内的本地事件总线。它只记录和分发 run 内发生过的 step 级、系统级和外部输入级事实，例如 step 开始或完成、定时器到期、观察窗口开始或结束、设备安装、外部 hook 输入到达或人工确认完成。事件本身不直接表达 run 的最终通过或失败；验证结论由 runtime step、extractor、result interpretation 和 agent review 基于证据共同判断。
 
 `Run Event Bus` 是内部 runtime 的事件层，不属于外部 `ValidatorAsset` 输入契约。它负责事件写入、排序、持久化、查询和幂等读取；它不直接解释事件，也不直接修改 step 状态。
 
-`RuntimeExecutionPlan` 确定后，AppPilot 初始化 Run Event Bus、注册 step event bindings、timer templates 和观察窗口。device watcher、log watcher、App WebSocket、外部 hook 和人工确认流程都统一写入 Run Event Bus；runtime step dispatcher 再按绑定关系消费事件并推进当前 `Validation Task`。
+`RuntimeExecutionPlan` 确定后，AppPilot 初始化 Run Event Bus、timer templates 和观察窗口。device watcher、外部 hook、scheduler、Runtime step executor 和人工确认流程可以写入 Run Event Bus；ReAct 内部 observation 不写入 Run Event Bus。
 
 Run Event Bus 中的事件分为三类：
 
 * 进度事件，用于推进执行计划；
-* 心跳事件，用于检查预算、卡顿、证据沉默和 scheduler 延迟；
+* 心跳事件，用于检查 ReAct 循环卡顿、step 预算和 run 预算；
 * 异常事件，用于触发 agent 在重试、降级、停止和提示人工之间做决策。心跳由 runtime monitor 根据条件触发，`intervalMs` 只作为兜底。
 
 `runtime_tick` 不写入 Run Event Bus。它只在 AppPilot runtime monitor 内部消费，用于证据采集、状态检查、stall 检测、预算检查和调度健康检查。只有当 `HeartbeatPolicy` 或异常策略判断出有意义信号时，才向 Run Event Bus 写入 Agent 可见的 `heartbeat` 或 `exception` 事件。
@@ -1568,11 +1743,11 @@ Run Event Bus 中的事件分为三类：
 
 - Event Bus：写入、排序、持久化、读取事件。
 - Scheduler：把 timer、观察窗口和心跳条件变成事件。
-- Watcher / Hook：把外部输入、设备状态、日志、App WebSocket 和人工确认变成事件。
-- Step Dispatcher：根据 `RuntimeExecutionPlan` 消费事件并推进 step。
+- Watcher / Hook：把外部输入、设备生命周期、App 安装状态和人工确认变成事件；日志与 App WebSocket 默认写入证据或 ReAct observation。
+- Step Dispatcher：根据 `RuntimeExecutionPlan`、ReAct 退出态和 Runtime 验证结果推进 step。
 - Agent：对进度、心跳、异常事件做策略响应。
 
-### 4.2 事件 Schema
+### 5.2 事件 Schema
 
 ```ts
 // run 内事件分类
@@ -1615,80 +1790,50 @@ type ExceptionEventAction =
   // 提示人工确认或人工介入
   | "prompt_human";
 
-// run 内事件类型；事件只表达发生的事实，不直接表达验证结论
+// run 内事件类型；事件只表达 Runtime 可观测的事实，不直接表达验证结论
 type ValidationEventType =
+  // step 已开始
+  | "step_started"
+  // step 已完成；Runtime 验证 successCriteria 通过
+  | "step_completed"
+  // step 失败；通常由预算耗尽或超时触发
+  | "step_failed"
+  // step 卡住；心跳检测到 ReAct 循环无进展
+  | "step_stalled"
+  // step 被阻塞；Agent 主动声明前提不成立或无法继续
+  | "step_blocked"
+  // 工具系统性不可用，例如 WDA、uiautomator2 或 App WebSocket bridge 不可用
+  | "tool_system_unavailable"
+  // Runtime 状态不一致，例如 checkpoint 或数据库状态不一致
+  | "runtime_state_inconsistent"
+  // run 级总预算耗尽
+  | "budget_exhausted"
   // 心跳已发出
   | "heartbeat_emitted"
-  // 单个步骤超过阈值没有进展
-  | "step_stalled"
-  // 期望证据通道超过阈值没有信号
-  | "evidence_stalled"
-  // Agent 或 run 预算使用超过阈值
-  | "budget_threshold_reached"
-  // 工具调用超时
-  | "tool_timeout"
-  // 工具调用失败
-  | "tool_failed"
-  // 设备控制后端不可用
-  | "device_control_unavailable"
-  // App WebSocket 超过阈值没有消息
-  | "app_ws_silence_detected"
-  // scheduler 延迟超过阈值
-  | "scheduler_lag_detected"
-  // checkpoint 写入失败
-  | "checkpoint_write_failed"
-  // runtime 捕获到未分类异常
-  | "runtime_exception"
   // 内部定时器到期
   | "timer_fired"
   // 观察窗口开始
   | "observe_window_started"
   // 观察窗口结束
   | "observe_window_finished"
+  // 设备已连接
+  | "device_connected"
+  // 设备已断开
+  | "device_disconnected"
   // App 已安装
   | "app_installed"
   // App 已卸载
   | "app_uninstalled"
   // App 被覆盖安装或替换
   | "app_replaced"
-  // App 已启动
-  | "app_launched"
-  // App 进入后台
-  | "app_backgrounded"
-  // App 回到前台
-  | "app_foregrounded"
-  // App 到达某个业务状态或场景状态
-  | "app_state_reached"
-  // App WebSocket 已连接
-  | "app_ws_connected"
-  // App WebSocket 已断开
-  | "app_ws_disconnected"
-  // App WebSocket 收到消息
-  | "app_ws_message"
-  // 日志匹配到指定 pattern
-  | "log_pattern_matched"
-  // 日志中检测到错误信号
-  | "log_error_detected"
-  // 设备已连接
-  | "device_connected"
-  // 设备已断开
-  | "device_disconnected"
-  // 设备状态发生变化
-  | "device_state_changed"
-  // 证据已采集
-  | "evidence_collected"
   // 外部输入事件已收到
   | "external_event_received"
   // 人工已确认
   | "human_confirmed"
   // 人工已拒绝
   | "human_rejected"
-  // Agent 已完成检查
-  | "agent_review_completed"
-  // 断言已通过
-  | "assertion_passed"
-  // 断言已失败
-  | "assertion_failed";
+  // Agent 已完成 run 级或材料级检查
+  | "agent_review_completed";
 
 // run 内事件来源
 type ValidationEventSource =
@@ -1700,12 +1845,6 @@ type ValidationEventSource =
   | "step_executor"
   // 设备 watcher
   | "device_watcher"
-  // App WebSocket 连接
-  | "app_ws"
-  // 日志 watcher
-  | "log_watcher"
-  // 证据采集器
-  | "evidence_collector"
   // 外部输入函数
   | "external_input"
   // 人工确认流程
@@ -1754,50 +1893,38 @@ type ValidationEvent = {
 // 心跳事件 payload
 type HeartbeatEventPayload = {
   // 心跳触发原因
-  reason:
-    | "interval"
-    | "step_stall"
-    | "evidence_stall"
-    | "budget_usage"
-    | "scheduler_lag";
+  reason: "interval" | "step_react_stall" | "step_budget_usage" | "run_budget_usage";
   // 当前步骤 ID
   currentStepId?: string;
   // 当前步骤已运行时间
   stepElapsedMs?: number;
-  // 沉默的证据通道
-  stalledEvidenceChannel?: EvidenceChannel;
-  // 证据通道沉默时间
-  evidenceSilentMs?: number;
-  // Agent 或 run 预算使用比例
-  budgetUsageRatio?: number;
-  // scheduler 延迟时间
-  schedulerLagMs?: number;
-  // 建议 agent 检查的项目
-  recommendedChecks: Array<"budget" | "step_progress" | "evidence_flow" | "scheduler">;
+  // 最近一轮 ReAct 迭代 ID
+  lastReactIterationId?: string;
+  // 距离最近一轮 ReAct 迭代过去多久
+  reactSilentMs?: number;
+  // step 预算使用比例
+  stepBudgetUsageRatio?: number;
+  // run 预算使用比例
+  runBudgetUsageRatio?: number;
+  // 建议 agent 或 runtime 检查的项目
+  recommendedChecks: Array<"step_progress" | "step_budget" | "run_budget">;
 };
 
 // 异常事件 payload
 type ExceptionEventPayload = {
   // 异常码
   code:
-    | "STEP_STALLED"
-    | "EVIDENCE_STALLED"
-    | "BUDGET_NEAR_EXHAUSTED"
-    | "TOOL_TIMEOUT"
-    | "TOOL_FAILED"
-    | "DEVICE_CONTROL_UNAVAILABLE"
-    | "APP_WS_SILENT"
-    | "SCHEDULER_LAG"
-    | "CHECKPOINT_WRITE_FAILED"
-    | "RUNTIME_EXCEPTION";
+    | "STEP_REACT_STALLED"
+    | "STEP_BUDGET_EXHAUSTED"
+    | "RUN_BUDGET_EXHAUSTED"
+    | "TOOL_SYSTEM_UNAVAILABLE"
+    | "RUNTIME_STATE_INCONSISTENT";
   // 异常描述
   message: string;
   // 关联步骤 ID
   stepId?: string;
   // 关联内部工具名称
   tool?: string;
-  // 当前已重试次数
-  retryCount?: number;
   // 建议动作候选
   actionCandidates: ExceptionEventAction[];
   // runtime 选出的默认建议动作
@@ -1806,114 +1933,43 @@ type ExceptionEventPayload = {
   lastProgressEventId?: string;
   // 最近一次心跳事件 ID
   lastHeartbeatEventId?: string;
+  // 最近一轮 ReAct 迭代 ID
+  lastReactIterationId?: string;
   // 关联证据引用
   evidenceRefs?: string[];
 };
-
-// step 事件匹配器
-type StepEventMatcher = {
-  // 匹配器类型
-  kind: "exact_payload" | "json_path" | "regex" | "artifact_selector" | "custom_tool";
-  // JSON path、regex 或 artifact selector 表达式
-  expression?: string;
-  // 期望 payload 片段；kind 为 exact_payload 时使用
-  expectedPayload?: Record<string, unknown>;
-  // 自定义匹配工具名称；kind 为 custom_tool 时使用
-  tool?: string;
-};
-
-// step 消费事件后的动作
-type StepEventEffect = {
-  // 事件消费后的动作类型
-  action:
-    | "advance_step"
-    | "collect_evidence"
-    | "start_timer"
-    | "emit_event"
-    | "agent_review"
-    | "fail_step"
-    | "continue_waiting";
-  // 目标步骤 ID；用于跳转或唤醒指定步骤
-  targetStepId?: string;
-  // 要采集的证据通道；action 为 collect_evidence 时使用
-  evidenceChannels?: EvidenceChannel[];
-  // 要启动的 timer 配置引用；action 为 start_timer 时使用
-  timerRef?: string;
-  // 要发布的事件类型；action 为 emit_event 时使用
-  emits?: ValidationEventType;
-  // 动作说明，供 agent 和人工审计阅读
-  reason?: string;
-};
-
-// step 事件消费绑定
-type StepEventBinding = {
-  // 事件绑定 ID，在同一个 step 内唯一
-  bindingId: string;
-  // 要消费的事件类型
-  type: ValidationEventType;
-  // 允许的事件来源列表；为空时不限制来源
-  sources?: ValidationEventSource[];
-  // 事件实例范围
-  instanceScope?: "same_instance" | "any_instance" | "run";
-  // 事件匹配器；为空时只按 type/source/instance 匹配
-  matcher?: StepEventMatcher;
-  // 触发效果所需的最少匹配次数
-  minMatches?: number;
-  // 匹配后是否继续监听后续事件
-  keepListening?: boolean;
-  // 事件等待超时时间
-  timeoutMs?: number;
-  // 消费事件后的动作列表
-  effects?: StepEventEffect[];
-};
-
-// step 可能主动产出的事件声明
-type StepEventProduction = {
-  // 事件产生时机
-  when: "step_started" | "step_completed" | "step_failed" | "evidence_collected" | "assertion_evaluated";
-  // 产出的事件类型
-  type: ValidationEventType;
-  // 事件来源；通常为 step_executor、evidence_collector 或 agent
-  source: ValidationEventSource;
-  // 事件 payload 模板
-  payload?: Record<string, unknown>;
-};
-
 ```
 
-### 4.3 事件生成和消费规则
+### 5.3 事件生成和消费规则
 
-- `progress` 事件必须设置 `agentResponseMode: "advance_plan"`；正常推进由 `Step Dispatcher` 按 `RuntimeExecutionPlan` 执行，agent 可以生成下一步建议或检查反馈，但不得绕过 runtime 直接修改 step 状态。
-- `heartbeat` 事件必须设置 `agentResponseMode: "review_health"`；agent 应检查 step 是否卡住、证据是否沉默、预算是否接近耗尽、scheduler 是否延迟。
-- `exception` 事件必须设置 `agentResponseMode: "decide_recovery"`，agent 必须在重试、降级、停止和提示人工之间做出明确决策。
-- `intervalMs` 只是心跳兜底；`step_stall`、`evidence_stall`、`budget_usage` 和 `scheduler_lag` 应作为 `HeartbeatEventPayload.reason` 触发 heartbeat。
-- Event Bus 积压不触发 heartbeat。积压超过阈值时，runtime 应暂停非关键事件产出；积压低于恢复阈值后再恢复。
-- `exception` 事件必须带 `severity`，并在 payload 中记录建议动作、关联 step、最近进度事件和支撑证据引用。
-- 心跳事件的 payload 应符合 `HeartbeatEventPayload`；异常事件的 payload 应符合 `ExceptionEventPayload`。
-- timer 到期由 scheduler 发布 `timer_fired`，并更新 timer 状态；是否推进 step 由 `StepEventBinding.effects` 决定。
+- Run Event Bus 只接收 step 级、系统级、timer / observation window、外部输入和人工确认事件。
+- ReAct 内部 observation 不写入 Run Event Bus；工具单次失败、查找 UI 失败、verification feedback 和普通策略调整都写入 `ReactIterationRecord`。
+- `step_started` 在 Runtime 开始执行一个 `RuntimeExecutionStep` 时写入。
+- `step_completed` 只能由 Runtime 独立验证 `successCriteria.verificationRules` 通过后写入，Agent 自评不能触发该事件。
+- `step_failed` 用于 ReAct 预算耗尽、step 超时或连续 verification 失败超过策略阈值。
+- `step_blocked` 只能由 `internal.react.declare_blocked` 或 Runtime 确认前提不成立后写入。
+- `tool_system_unavailable` 只表达工具系统性不可用，例如 WDA、uiautomator2、App WebSocket bridge 或关键构建工具不可用；单次工具调用错误不是该事件。
+- `runtime_state_inconsistent` 表达 checkpoint、SQLite、artifact 索引或 run 状态不一致。
+- `heartbeat_emitted` 必须设置 `agentResponseMode: "review_health"`，用于检查 step ReAct 循环是否长时间无新迭代、step 预算或 run 预算是否接近耗尽。
+- `exception` 类事件必须设置 `agentResponseMode: "decide_recovery"`，并在 payload 中记录建议动作、关联 step、最近进度事件、最近 ReAct 迭代和支撑证据引用。
+- timer 到期由 scheduler 发布 `timer_fired`，并更新 timer 状态；是否影响当前 step 由 Runtime 按当前 step 状态决定。
 - 观察窗口由 scheduler 发布 `observe_window_started` 和 `observe_window_finished`；事件 payload 必须包含 `windowId`，并尽量携带 `instanceId` 和 `stepId` 用于并发窗口消歧。
-- watcher / hook 只负责把外部输入、设备状态、日志、App WebSocket 和人工确认转成事件，不直接修改 step 状态。
-- `device_watcher` 负责把设备连接、断开、App 安装、卸载、覆盖安装、前后台变化转为事件。
-- `log_watcher` 负责把日志 pattern 命中转为 `log_pattern_matched` 或 `log_error_detected`。
-- `app_ws` 负责把 App 主动反馈转为 `app_ws_message`、`app_state_reached` 或连接状态事件。
-- `external_input` 只通过 `external.event.emit` 或受控内部事件写入工具写入 run 内事件，不直接修改 step 状态。
-- hook 本质是外部事件输入函数；事件写入后仍由 step binding 匹配、消费和推进。
-- 每个事件消费结果必须落库，避免恢复后重复推进同一个 step。
-- Runtime step 按 `RuntimeExecutionPlan` 执行。step 可以调用工具、采集证据、等待事件、创建 timer 并进入 waiting 状态、进入观察窗口或等待人工确认。
-- step 状态变化必须来自明确的工具结果、事件消费结果、timer 事件、观察窗口结果、runtime 应用后的 agent 决策记录或人工确认记录。
-- agent 决策不能直接修改 step 状态；它只能产出 recovery decision 或 next action，由 runtime 记录后再推进 step。
+- device watcher 只发布设备生命周期事件和 App 安装、卸载、覆盖安装事件。App 前后台、日志命中、App WebSocket 消息、UI tree、截图和工具结果都作为 ReAct observation 或 evidence artifact 记录，不作为 Run Event Bus 事件。
+- `external_input` 只通过 `external.event.emit` 写入 `external_event_received`，不直接修改 step 状态。
+- 每个事件处理结果必须落库，避免恢复后重复处理同一 step 级或系统级事件。
+- agent 决策不能直接修改 step 状态；它只能产出 recovery decision、review 或 blocked 声明，由 Runtime 记录并推进状态。
 
-## 5. Timer 与 Scheduler
+## 6. Timer 与 Scheduler
 
-### 5.1 调度边界
+### 6.1 调度边界
 
 Timer 与 Scheduler 是 run 内部机制。它们用于延迟检查、跨小时或跨天观察窗口、心跳触发和事件唤醒，不创建外部长期调度任务。
 
 `RuntimeExecutionPlan` 确定后，AppPilot 初始化 Internal Scheduler。scheduler 负责把 timer 到期、观察窗口和心跳条件转换为 run 内事件；runtime tick 只驱动内部轮询和健康检查，不转换为 run 内事件。
 
-Scheduler 只把 timer 到期、心跳条件和观察窗口边界转换为事件，并更新本地调度状态。是否推进 step 由 `Step Dispatcher` 按 `StepEventBinding.effects` 决定。
+Scheduler 只把 timer 到期、心跳条件和观察窗口边界转换为事件，并更新本地调度状态。是否推进 step 由 Runtime 根据当前 step 状态、ReAct 退出态和 Runtime 验证结果决定。
 
-### 5.2 Timer Schema
+### 6.2 Timer Schema
 
 ```ts
 // run 内定时器
@@ -1926,8 +1982,6 @@ type RunTimer = {
   instanceId?: string;
   // 定时器关联步骤 ID
   stepId: string;
-  // 定时器关联事件绑定 ID
-  bindingId?: string;
   // 定时器调度方式
   schedule: {
     // 调度类型
@@ -1956,16 +2010,16 @@ type RunTimer = {
 };
 ```
 
-### 5.3 调度规则
+### 6.3 调度规则
 
-- `intervalMs` 只是心跳兜底；`step_stall`、`evidence_stall`、`budget_usage` 和 `scheduler_lag` 应作为 `HeartbeatEventPayload.reason` 触发 heartbeat。
+- `intervalMs` 只是心跳兜底；`step_react_stall`、`step_budget_usage` 和 `run_budget_usage` 应作为 `HeartbeatEventPayload.reason` 触发 heartbeat。
 - Event Bus 积压超过 `EventBusBackpressurePolicy.pauseThreshold` 时，scheduler 和 watcher 应暂停非关键进度事件、证据采样事件和诊断噪声事件；积压低于 `EventBusBackpressurePolicy.resumeThreshold` 后恢复。关键异常事件仍可写入，但必须去重或限流。
 - timer 到期时，scheduler 必须以事务方式同时更新 timer 状态并写入 `timer_fired` 事件。
 - 观察窗口开始和结束时，scheduler 必须分别写入 `observe_window_started` 和 `observe_window_finished` 事件，事件 payload 必须包含 `windowId`。
 
-## 6. 长任务与 Checkpoint
+## 7. 长任务与 Checkpoint
 
-### 6.1 长任务状态 Schema
+### 7.1 长任务状态 Schema
 
 AppPilot 验证任务是长任务，只能在阶段边界安全恢复。
 
@@ -1980,17 +2034,19 @@ type ValidationTaskState =
   | "running"
   // Agent 正在理解任务并生成计划
   | "agent_planning"
-  // Agent 正在调用授权工具执行计划
+  // Agent 正在调用授权工具执行非 ReAct 任务
   | "agent_executing"
+  // Agent 正在执行 ReAct 循环
+  | "react_executing"
   // Agent 正在检查证据并生成反馈
   | "agent_reviewing"
   // 等待 agent 反馈或人工确认提示落盘
   | "waiting_agent_feedback"
   // 等待外部 artifact、设备或工具结果
   | "waiting_artifacts"
-  // 等待 run 内事件
+  // 等待 Runtime 处理 run 内事件
   | "waiting_event"
-  // 正在观察窗口内采集证据
+  // Runtime 正在观察窗口内采集证据
   | "observing"
   // 正在抽取证据
   | "extracting_evidence"
@@ -2111,7 +2167,7 @@ type ValidationTask = {
 };
 ```
 
-### 6.2 检查点规则
+### 7.2 检查点规则
 
 - `RuntimeExecutionPlan` 确定后，AppPilot 初始化 SQLite checkpoint。checkpoint 负责恢复边界，必须和任务状态、事件游标、timer 状态、artifact 引用保持一致。
 - 任务只能从已完成的阶段边界恢复。
@@ -2119,17 +2175,17 @@ type ValidationTask = {
 - 已确认的 `ExecutionFact` 不做原地覆盖。
 - 验证需求或验证流程变化时，调用方必须启动新的 run。
 - 检查点、任务状态和事件索引必须先写入本地状态数据库，再暴露给 `validation_status` 和恢复调度。
-- scheduler 到期必须以事务方式同时更新 timer 状态并写入 `timer_fired` 事件；被唤醒 step 和状态推进由 `Step Dispatcher` 的事件消费记录表达。
+- scheduler 到期必须以事务方式同时更新 timer 状态并写入 `timer_fired` 事件；被唤醒 step 和状态推进由 Runtime 事件处理记录表达。
 - 外部输入事件必须支持 `idempotencyKey` 去重，避免 hook 重放导致重复推进。
-- step 消费事件后必须写入 `DbStepEventConsumptionRecord`；恢复时以该记录判断 effect 是否已经执行。
+- Runtime 处理 step 级或系统级事件后必须写入 `DbEventProcessingRecord`；恢复时以该记录判断事件处理是否已经执行。
 
-## 7. 本地数据库
+## 8. 本地数据库
 
-### 7.1 数据库边界
+### 8.1 数据库边界
 
-AppPilot 使用小型本地 SQLite 数据库作为任务控制的状态核心。数据库负责 run、validation instance、evidence instance、checkpoint、状态恢复、任务审计事件、run 内事件 bus、timer、runtime 健康状态、step 事件消费记录、runtime plan cache 索引和 artifact 引用索引；大体积 artifact 正文仍然保存在 run 目录中。
+AppPilot 使用小型本地 SQLite 数据库作为任务控制的状态核心。数据库负责 run、validation instance、evidence instance、checkpoint、状态恢复、任务审计事件、run 内事件 bus、timer、runtime 健康状态、事件处理记录、runtime plan cache 索引和 artifact 引用索引；大体积 artifact 正文仍然保存在 run 目录中。
 
-### 7.2 数据库路径
+### 8.2 数据库路径
 
 数据库路径：
 
@@ -2137,9 +2193,9 @@ AppPilot 使用小型本地 SQLite 数据库作为任务控制的状态核心。
 ~/.apppilot/state/apppilot.sqlite
 ```
 
-### 7.3 数据库记录 Schema
+### 8.3 数据库记录 Schema
 
-数据库使用 WAL 模式。每个阶段边界必须在同一个事务中写入任务状态、任务审计事件、run 内事件、timer 状态、step 事件消费记录、checkpoint 记录和新增 artifact 引用。这样即使进程中断，恢复流程也能从数据库中找到最后一个一致的 checkpoint。
+数据库使用 WAL 模式。每个阶段边界必须在同一个事务中写入任务状态、任务审计事件、run 内事件、timer 状态、事件处理记录、checkpoint 记录和新增 artifact 引用。这样即使进程中断，恢复流程也能从数据库中找到最后一个一致的 checkpoint。
 
 ```ts
 // 本地状态数据库配置
@@ -2291,7 +2347,7 @@ type DbRuntimeHealthRecord = {
   lastEvidenceEventId?: string;
   // Agent 或 run 预算使用比例
   budgetUsageRatio?: number;
-  // Event Bus 待消费事件数量
+  // Event Bus 待处理事件数量
   eventBusBacklog?: number;
   // runtime 健康状态
   state: "healthy" | "watching" | "stalled" | "exception";
@@ -2313,8 +2369,6 @@ type DbRunTimerRecord = {
   instanceId?: string;
   // 定时器关联步骤 ID
   stepId: string;
-  // 定时器关联事件绑定 ID
-  bindingId?: string;
   // 定时器调度配置引用
   scheduleRef: string;
   // 定时器状态
@@ -2331,32 +2385,28 @@ type DbRunTimerRecord = {
   updatedAt: string;
 };
 
-// 数据库中的 step 事件消费记录
-type DbStepEventConsumptionRecord = {
-  // 消费记录 ID
-  consumptionId: string;
+// 数据库中的事件处理记录
+type DbEventProcessingRecord = {
+  // 处理记录 ID
+  processingId: string;
   // 单次验证 run ID
   runId: string;
   // 长任务 ID
   taskId: string;
-  // 验证实例 ID；run 级消费为空
+  // 验证实例 ID；run 级事件为空
   instanceId?: string;
-  // 消费事件的步骤 ID
-  stepId: string;
-  // 事件绑定 ID
-  bindingId: string;
-  // 被消费的事件 ID
+  // 处理事件的步骤 ID；系统级事件为空
+  stepId?: string;
+  // 被处理的事件 ID
   eventId: string;
-  // 消费状态
-  status: "matched" | "ignored" | "consumed" | "failed";
-  // 执行过的 effect 类型列表
-  effectsApplied?: StepEventEffect["action"][];
-  // 消费产生的输出引用列表
+  // 处理状态
+  status: "ignored" | "processed" | "failed";
+  // 处理产生的输出引用列表
   outputRefs?: string[];
-  // 消费失败或忽略原因
+  // 处理失败或忽略原因
   reason?: string;
-  // 消费时间
-  consumedAt: string;
+  // 处理时间
+  processedAt: string;
 };
 
 // 数据库中的 RuntimeExecutionPlan 缓存索引记录
@@ -2593,7 +2643,7 @@ type LocalRunSummary = {
 };
 ```
 
-### 7.4 恢复规则
+### 8.4 恢复规则
 
 - AppPilot 启动时扫描数据库中 `running / interrupted` 的 run，生成 `DbRecoveryRecord`。
 - 恢复只从 `resumable: true` 的最近 checkpoint 开始。
@@ -2601,10 +2651,10 @@ type LocalRunSummary = {
 - 如果 checkpoint 指向的 output ref 已存在，恢复流程必须复用该输出，不得重复执行写入动作。
 - 如果数据库记录存在但 run 目录缺失，任务进入 `failed`，错误码为 `TASK_INTERRUPTED`。
 - 恢复扫描必须重新加载未完成的 `DbRunTimerRecord`，对已过期但未写入事件的 timer 补发 `timer_fired`。
-- 恢复扫描必须重新匹配未消费的 `DbRunEventRecord`，但不得重复执行已有 `DbStepEventConsumptionRecord` 的 effect。
+- 恢复扫描必须重新读取未处理的 `DbRunEventRecord`，但不得重复执行已有 `DbEventProcessingRecord` 对应的事件处理结果。
 - `events.ndjson` 是数据库事件表的可读导出，不是恢复的唯一依据。
 
-### 7.5 实例索引规则
+### 8.5 实例索引规则
 
 - `ValidationRun` 表达一次逻辑验证任务和一个唯一场景，`ValidationInstance` 表达该场景下的一次具体设备执行实例。
 - 多实例验证由 run options 显式声明，只表示同一场景下的多设备或可选 Editor 会话执行。
@@ -2617,9 +2667,9 @@ type LocalRunSummary = {
 - run 级 `ExecutionResult` 不是某个设备的原始结果，而是 `RunAggregationResult` 的摘要。
 - 写回材料必须保留参与确认的 `instanceIds` 和 `evidenceInstanceIds`，不得把未确认实例纳入确认范围。
 
-## 8. MCP 工具契约
+## 9. MCP 工具契约
 
-### 8.1 本地入口
+### 9.1 本地入口
 
 安装后的 agent 入口：
 
@@ -2630,11 +2680,11 @@ type LocalRunSummary = {
 
 宿主代码助手可以注入 AppPilot 直连工具。未注入时，`~/.apppilot/apppilot-mcp-call` 是稳定 fallback。
 
-### 8.2 工具边界
+### 9.2 工具边界
 
 AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent 工具。
 
-对外 agent 工具是面向外部代码助手、调用方和人工确认流程的稳定入口。外部 agent 输入行为事实、验证目标、运行约束和人工确认结果，AppPilot 内部 agent 负责理解、编排、执行、检查和生成确认提示。对外 agent 不直接操作设备、日志、UI 控制、App WebSocket、SQLite checkpoint、Event Bus 消费记录或 Evidence Store 内部索引。
+对外 agent 工具是面向外部代码助手、调用方和人工确认流程的稳定入口。外部 agent 输入行为事实、验证目标、运行约束和人工确认结果，AppPilot 内部 agent 负责理解、编排、执行、检查和生成确认提示。对外 agent 不直接操作设备、日志、UI 控制、App WebSocket、SQLite checkpoint、Event Bus 处理记录或 Evidence Store 内部索引。
 
 对内 AppPilot agent 工具是 AppPilot 内部 agent、runtime、scheduler、watcher 和 step dispatcher 使用的原子能力。它们可以通过 MCP 暴露给受控的内部 agent，但默认不作为对外主入口。已有兼容工具可以继续存在，但应逐步作为 wrapper 调用更细粒度内部工具。
 
@@ -2645,7 +2695,7 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - 对外 agent 工具必须返回稳定材料引用，不暴露内部 step、timer、event cursor 或数据库主键。
 - 对内 AppPilot agent 工具可以返回内部引用，但必须绑定 `agentSessionId`、`runId`、权限策略和审计记录。
 
-### 8.3 工具披露规则
+### 9.3 工具披露规则
 
 - 每个会改变设备、任务、数据库或 evidence store 的工具都必须返回稳定引用。
 - 每个证据采集工具都必须写入 run 证据目录，并在 SQLite 中登记 artifact 引用。
@@ -2656,7 +2706,7 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - 对外工具不得返回未脱敏的原始 artifact 正文；只能返回 artifact ref、摘要、hash、确认提示或导出材料。
 - 对内工具返回的原始输出必须进入 Evidence Store 或 agent audit，再由对外工具选择性导出。
 
-### 8.4 对外 Agent 工具组
+### 9.4 对外 Agent 工具组
 
 对外 agent 工具组只提供稳定、高层、可审计的验证入口：
 
@@ -2668,10 +2718,10 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - `external.confirmation.submit`：提交人工确认结果、确认范围和备注。
 - `external.confirmation.list_prompts`：读取待处理人工确认提示。
 - `external.artifact.read_summary`：读取已脱敏的 artifact 摘要和引用。
-- `external.event.emit`：写入外部 hook 事件；只进入 Run Event Bus，不直接修改 step 状态。
+- `external.event.emit`：写入外部 hook 事件；只允许写入 `external_event_received`，不直接修改 step 状态。
 - `external.coverage.advisory`：基于本机运行记录给出本地覆盖建议，不做权威覆盖判断。
 
-### 8.5 对内 AppPilot Agent 工具组
+### 9.5 对内 AppPilot Agent 工具组
 
 对内 AppPilot agent 工具组是内部执行原子能力，默认只授权给 AppPilot runtime 和受控内部 agent：
 
@@ -2684,10 +2734,11 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - `internal.device.launch`：启动或 attach App。
 - `internal.device.control_ui`：通过 WDA 或 uiautomator2 执行 UI 控制和 UI 观测。
 - `internal.app_ws.call`：调用 App 侧 JSON-RPC。
-- `internal.app_ws.subscribe`：订阅 App WebSocket 证据流并写入事件或证据。
+- `internal.app_ws.subscribe`：订阅 App WebSocket 证据流并写入 Evidence Store 或 ReAct observation。
+- `internal.react.declare_blocked`：Agent 主动声明当前 ReAct step 无法继续，并请求 Runtime 转为 `step_blocked`。
 - `internal.event.emit`：写入 run 内事件。
 - `internal.event.read`：读取 run 内事件流。
-- `internal.event.consume`：记录 step 对事件的消费结果。
+- `internal.event.consume`：记录 Runtime 对 step 级或系统级事件的处理结果。
 - `internal.timer.schedule`：创建 run 内 timer。
 - `internal.timer.cancel`：取消 run 内 timer。
 - `internal.evidence.collect`：采集日志、截图、UI、API/SQL、数据快照、设备状态或 app_ws artifact。
@@ -2696,9 +2747,9 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - `internal.db.checkpoint_write`：写入 checkpoint。
 - `internal.db.checkpoint_read`：读取 checkpoint 和恢复上下文。
 - `internal.db.task_update`：更新 `Validation Task` 本地状态。
-- `internal.audit.write`：写入 agent、工具调用、事件消费和人工确认审计记录。
+- `internal.audit.write`：写入 agent、工具调用、事件处理和人工确认审计记录。
 
-### 8.6 工具 Schema
+### 9.6 工具 Schema
 
 本节定义 MCP 工具函数名、调用参数和返回结构。两类 schema 不得混用：对外 schema 只接受稳定输入契约、行为事实、运行约束、人工确认和导出查询参数；对内 schema 可以接受 step、timer、event cursor、device session、agent session、checkpoint 和 artifact 内部引用。
 
@@ -2978,8 +3029,8 @@ type ExternalMcpTool =
       input: {
         // 单次验证 run ID
         runId: string;
-        // 外部事件类型
-        type: ValidationEventType;
+        // 外部事件类型；对外只允许 external_event_received
+        type: "external_event_received";
         // 外部事件 payload
         payload?: Record<string, unknown>;
         // 验证实例 ID
@@ -3260,6 +3311,30 @@ type InternalMcpTool =
       };
     }
   | {
+      // Agent 主动声明当前 ReAct step blocked
+      name: "internal.react.declare_blocked";
+      input: {
+        // 单次验证 run ID
+        runId: string;
+        // 验证实例 ID
+        instanceId?: string;
+        // 当前步骤 ID
+        stepId: string;
+        // blocked 声明
+        blocked: ReactDeclareBlockedInput;
+        // 幂等键
+        idempotencyKey?: string;
+      };
+      output: InternalToolOutputBase & {
+        // 写入的 step_blocked 事件 ID
+        eventId: string;
+        // ReAct 退出原因
+        exitReason: "agent_blocked";
+        // 任务状态
+        taskState: ValidationTaskState;
+      };
+    }
+  | {
       // 写入 run 内事件
       name: "internal.event.emit";
       input: {
@@ -3310,28 +3385,30 @@ type InternalMcpTool =
       };
     }
   | {
-      // 记录事件消费
+      // 记录事件处理结果
       name: "internal.event.consume";
       input: {
         // 单次验证 run ID
         runId: string;
         // 事件 ID
         eventId: string;
-        // 事件绑定 ID
-        bindingId: string;
-        // 消费该事件的 step ID
-        stepId: string;
-        // 消费效果
-        effects?: StepEventEffect[];
+        // 处理该事件的 step ID；系统级事件为空
+        stepId?: string;
+        // 处理状态
+        status: "ignored" | "processed" | "failed";
+        // 处理产生的输出引用列表
+        outputRefs?: string[];
+        // 处理失败或忽略原因
+        reason?: string;
         // 幂等键
         idempotencyKey?: string;
       };
       output: InternalToolOutputBase & {
-        // 事件消费记录 ID
-        consumptionId: string;
-        // 事件消费后产生的状态 patch 引用
+        // 事件处理记录 ID
+        processingId: string;
+        // 事件处理后产生的状态 patch 引用
         statePatchRef?: string;
-        // 是否因为幂等键复用了已有消费记录
+        // 是否因为幂等键复用了已有处理记录
         deduplicated?: boolean;
       };
     }
@@ -3345,8 +3422,6 @@ type InternalMcpTool =
         instanceId?: string;
         // 关联 step ID
         stepId: string;
-        // 关联事件绑定 ID
-        bindingId?: string;
         // timer 调度配置
         schedule: RunTimer["schedule"];
       };
@@ -3512,7 +3587,7 @@ type InternalMcpTool =
         // 单次验证 run ID
         runId: string;
         // 审计类型
-        auditType: "agent" | "tool_call" | "event_consumption" | "human_confirmation";
+        auditType: "agent" | "tool_call" | "event_processing" | "human_confirmation";
         // 审计 payload 引用
         payloadRef?: string;
         // 小型审计摘要
@@ -3527,9 +3602,9 @@ type InternalMcpTool =
     };
 ```
 
-## 9. 构建
+## 10. 构建
 
-### 9.1 构建边界
+### 10.1 构建边界
 
 构建产物也是普通 artifact，可以被验证 run 引用。AppPilot 的构建契约面向 App，不限定 Unity；Unity、Xcode、Gradle、Flutter、React Native 或 custom command 都通过构建能力表达。
 
@@ -3714,15 +3789,15 @@ type BuildCacheKey = {
 };
 ```
 
-### 9.2 构建策略
+### 10.2 构建策略
 
 构建是 run 级或构建产物级动作。AppPilot 可以为本次 run 构建 App，也可以复用已存在且满足约束的构建产物。
 
 当 run options 声明需要构建时，验证 runtime 可以先执行构建。否则它使用调用方提供的兼容构建产物，或使用 AppPilot artifact store 中最近的兼容构建产物。
 
-## 10. 设备与 App 控制
+## 11. 设备与 App 控制
 
-### 10.1 支持能力
+### 11.1 支持能力
 
 AppPilot 支持：
 
@@ -3737,7 +3812,7 @@ AppPilot 支持：
 - 通过 App WebSocket bridge 采集 App WebSocket 证据或调用 App 侧 JSON-RPC。
 - 通过 App WebSocket bridge 接收 App WebSocket 证据。
 
-### 10.2 设备控制后端边界
+### 11.2 设备控制后端边界
 
 - 实例级动作负责 install、launch 或 attach。
 - 每个 `ValidationInstance` 启动后，需要连接本次验证所需通道，包括 device driver、Editor、App 侧 RPC、App WebSocket 和 evidence tools。
@@ -3747,24 +3822,24 @@ AppPilot 支持：
 - uiautomator2 只负责 Android UI 交互和 UI 观测证据。
 - 设备控制配置未显式传入时，AppPilot 按平台选择默认后端：iOS 为 `wda`，Android 为 `uiautomator2`。
 
-### 10.3 App WebSocket Bridge
+### 11.3 App WebSocket Bridge
 
 App WebSocket bridge 是双向通信通道：
 
 - AppPilot -> App：通过 JSON-RPC 查询 App scene hierarchy、读取 node 属性、触发调试动作、调用测试接口，或读取 App 内部日志、BI 埋点、云控数据、数据库数据和广告数据。
 - App -> AppPilot：通过 `app_ws` 证据通道主动推送 scene hierarchy 片段、node 属性变化、场景、监控、调试、指标、埋点事件和自定义事件。
 
-当 `ValidatorAsset` 把 App 侧 RPC 声明为期望证据来源时，RPC 返回值会被纳入对应 evidence artifact。当 `ValidatorAsset` 把 `app_ws` 声明为期望证据来源时，App 主动推送消息会按 run 落盘，并由 `app_ws_message` extractor 抽取为 `ExecutionFact`。
+当 `ValidatorAsset` 把 App 侧 RPC 声明为期望证据来源时，RPC 返回值会被纳入对应 evidence artifact。当 `ValidatorAsset` 把 `app_ws` 声明为期望证据来源时，App 主动推送消息会按 run 落盘，并由 App WebSocket extractor 抽取为 `ExecutionFact`。
 
 App WebSocket 读取到的 scene hierarchy 和 node 属性属于 App 内部观测证据。它可以辅助定位交互对象、解释 App 状态或生成结构化执行事实，但不等同于设备 UI 后端；真实设备 UI 控制仍由 WDA 或 uiautomator2 执行。
 
-## 11. 证据获取
+## 12. 证据获取
 
-### 11.1 Extractor 边界
+### 12.1 Extractor 边界
 
 `evidence_extractors` 属于外部 `ValidatorAsset` 输入契约。AppPilot 负责执行 extractor、保存 extractor 结果并生成 `ExecutionFact`，但本章不重复定义 extractor 字段。
 
-### 11.2 证据产出 Schema
+### 12.2 证据产出 Schema
 
 AppPilot 在 instance 执行过程中采集日志、App 侧结构化信号、业务事件、App WebSocket 证据、API/SQL 结果、线上数据快照、UI 观测、截图和设备状态。
 
@@ -3888,7 +3963,7 @@ type Diagnostic = {
 };
 ```
 
-### 11.3 典型提取方式
+### 12.3 典型提取方式
 
 - 从日志 selector 提取结构化 predicate。
 - 从 App 侧结构化信号提取 observed value。
@@ -3899,15 +3974,15 @@ type Diagnostic = {
 - 把截图作为证据引用绑定到事实。
 - 从设备状态快照提取环境事实。
 
-## 12. Evidence Store
+## 13. Evidence Store
 
-### 12.1 存储边界
+### 13.1 存储边界
 
 Evidence Store 负责保存一次 run 的原始 artifact、结构化证据包、执行事实、人工确认材料和写回材料引用。SQLite 只保存状态、索引、checkpoint 和引用；大体积 artifact 正文保存在 run 级证据目录中。
 
 Evidence Store 采用 run 级目录结构。现有 `~/.apppilot/artifact` 可以继续作为 legacy artifact 目录或构建产物缓存；进入验证 run 后，所有证据都必须复制、链接或登记到对应 run 的 Evidence Store，并在 SQLite 中登记 artifact 引用。
 
-### 12.2 目录结构
+### 13.2 目录结构
 
 Evidence Store 建议目录结构：
 
@@ -3990,11 +4065,11 @@ Evidence Store 建议目录结构：
 - `local_run_summary` 只导出本机观察记录，不做权威覆盖判断。
 - 删除或清理 Evidence Store 前必须先确认没有未导出的写回材料、未完成确认提示或可恢复 checkpoint。
 
-## 13. 安全规则
+## 14. 安全规则
 
-### 13.1 Runtime Safety Policy
+### 14.1 Runtime Safety Policy
 
-`RuntimeSafetyPolicy` 属于 runtime 安全策略，不属于 Timer Schema。它定义 runtime tick、心跳触发、Event Bus backpressure 和异常响应边界；Scheduler 只根据这些策略产出 timer、观察窗口和 heartbeat 事件，Agent 只根据 Run Event Bus 中的事件做策略响应，step 状态仍由 runtime 统一写入。
+`RuntimeSafetyPolicy` 属于 runtime 安全策略，不属于 Timer Schema。它定义 runtime tick、ReAct 循环策略、心跳触发、Event Bus backpressure 和异常响应边界；Scheduler 只根据这些策略产出 timer、观察窗口和 heartbeat 事件，Agent 只根据 Run Event Bus 中的事件做策略响应，step 状态仍由 runtime 统一写入。
 
 `runtime_tick` 只在 AppPilot 内部消费，不发布到 Run Event Bus。runtime monitor 在 tick 中执行证据采集、状态检查、stall 检测、预算检查和调度健康检查；只有当 `HeartbeatPolicy` 条件满足或异常策略命中时，才向 Run Event Bus 写入 Agent 可见的 heartbeat 或 exception 事件。
 
@@ -4009,28 +4084,40 @@ type RuntimeTickPolicy = {
   internalSignal: "runtime_tick";
 };
 
-// 心跳触发策略
+// 心跳触发策略；心跳监控 step 级健康状态，不监控单次工具调用
 type HeartbeatPolicy = {
-  // 兜底心跳间隔；条件未触发时也会按该间隔发出心跳
+  // 兜底心跳间隔
   intervalMs: number;
   // 立即触发心跳的条件
   triggers: {
-    // 单个步骤超过多久没有进展
-    stepStallThresholdMs: number;
-    // 期望的 evidence channel 超过多久没有信号
-    evidenceStallThresholdMs: number;
-    // Agent 或 run 预算使用超过多少比例
-    budgetUsageThreshold: number;
-    // scheduler 实际触发时间比计划时间延迟多久时触发心跳
-    schedulerLagThresholdMs?: number;
+    // 当前 step 的 ReAct 循环超过多久没有产出新的 ReactIterationRecord
+    stepReactStallThresholdMs: number;
+    // step 级预算使用比例阈值
+    stepBudgetUsageThreshold: number;
+    // run 级总预算使用比例阈值
+    runBudgetUsageThreshold: number;
   };
+};
+
+// ReAct 循环策略
+type ReactPolicy = {
+  // 单个 react_task 默认最大迭代次数
+  defaultMaxIterations: number;
+  // 单次 observation 默认最大等待时间
+  defaultObservationTimeoutMs: number;
+  // verification 失败回喂是否作为一轮迭代消耗 maxIterations 预算
+  countVerificationAsIteration: true;
+  // 是否持久化完整推理过程；默认 false，仅在 debug 或合规审计需要时打开
+  persistFullReasoning: boolean;
+  // 同一 step 内连续 verification 全失败次数上限；超过即提前转 step_failed
+  maxConsecutiveFailedVerifications?: number;
 };
 
 // Event Bus backpressure 策略
 type EventBusBackpressurePolicy = {
-  // 待消费事件超过多少条时暂停非关键事件产出
+  // 待处理事件超过多少条时暂停非关键事件产出
   pauseThreshold: number;
-  // 待消费事件低于多少条时恢复非关键事件产出
+  // 待处理事件低于多少条时恢复非关键事件产出
   resumeThreshold: number;
   // 暂停期间仍允许写入的事件分类
   alwaysAllowCategories: Array<"exception">;
@@ -4062,12 +4149,14 @@ type RuntimeSafetyPolicy = {
   eventBusBackpressure: EventBusBackpressurePolicy;
   // 异常处理策略
   exceptionHandling: ExceptionHandlingPolicy;
+  // ReAct 循环策略
+  reactPolicy: ReactPolicy;
 };
 ```
 
 同一事件类型命中多个异常处理列表时，优先级固定为 `stopEventTypes > humanPromptEventTypes > degradableEventTypes`。Event Bus 积压不触发 heartbeat；积压超过 `pauseThreshold` 时，runtime 暂停非关键事件产出，低于 `resumeThreshold` 后恢复。
 
-### 13.2 执行与写回安全
+### 14.2 执行与写回安全
 
 - AppPilot 不直接写外部 consumption snapshot 或 published index。
 - AppPilot 不在缺少人工确认时产出写回材料包。
@@ -4087,7 +4176,7 @@ type RuntimeSafetyPolicy = {
 - `failed / partial / blocked / interrupted` 的 diagnostics 必须保留用于审计。
 - cancellation 只能阻止后续动作，不删除已经写出的证据。
 
-### 13.3 人工确认边界
+### 14.3 人工确认边界
 
 人工确认用于确认执行结果、证据范围、诊断解释和准备回流的材料。没有人工确认，AppPilot 不应把本次 run 的结果包装为可写回材料。
 
@@ -4186,9 +4275,9 @@ type HumanConfirmationRecord = {
 
 提交的 `result` 与 `confirmationType` 不匹配时，AppPilot 必须拒绝该确认输入，并在输出中返回 `accepted: false`，不改变任务状态。
 
-## 14. 错误处理
+## 15. 错误处理
 
-### 14.1 错误 Schema
+### 15.1 错误 Schema
 
 错误使用稳定 code 和 recoverable 字段表达。
 
@@ -4230,19 +4319,20 @@ type AppPilotError = {
 };
 ```
 
-### 14.2 恢复语义
+### 15.2 恢复语义
 
 可恢复错误可以按阶段重试。不可恢复错误使验证任务进入 `failed` 或 `blocked`，具体取决于验证流程是否到达验证触点。
 
-## 15. 审计与重放
+## 16. 审计与重放
 
-### 15.1 必须记录的审计材料
+### 16.1 必须记录的审计材料
 
 每次验证 run 必须记录：
 
 - 原始 `ValidatorAsset` 和 run options 快照。
 - `ValidatorAsset` 正文或解析后的 `validatorAssetRef`。
 - Agent 控制配置、Agent 会话、Agent 计划、Agent 检查反馈和人工确认提示。
+- ReAct 每轮 `ReactIterationRecord`，包括 `reasoningSummary`、action、observation、verification feedback 和 artifact 引用。
 - 本地 SQLite 数据库中的 run 记录、事件记录、checkpoint 记录、artifact 引用和恢复记录。
 - 多实例 run 的 `ValidationInstance`、`EvidenceInstance` 和 `RunAggregationResult`。
 - 构建产物引用。
@@ -4254,6 +4344,6 @@ type AppPilotError = {
 - 人工确认记录。
 - 写回材料包。
 
-### 15.2 重放要求
+### 16.2 重放要求
 
-给定同一个 run 目录，AppPilot 应能在不重新执行设备流程的情况下，重放证据提取和写回材料包生成。
+给定同一个 run 目录，AppPilot 应能在不重新执行设备流程的情况下，基于 `ReactIterationRecord` 完整轨迹、Evidence Store、SQLite 事件记录和 artifact 索引，重放证据提取、Runtime 验证和写回材料包生成。
