@@ -8,15 +8,16 @@ AppPilot 是面向代码助手和 App 工程的本地验证运行时。它负责
 
 AppPilot 负责：
 
+- 以 TypeScript + Node.js LTS 作为核心 runtime 契约；Bun 或 pnpm 可以用于开发脚本、安装和构建流程，但生产执行目标必须保持 Node.js LTS 兼容。
 - 按结构化 `ValidatorAsset` 执行 iOS、Android 和可选 Editor 验证流程。
 - 通过 Codex Agent SDK 控制验证任务，由 agent 理解输入、编排执行、检查证据、生成反馈并提示人工确认。
 - 通过本地 SQLite 状态数据库管理验证任务状态、检查点、重试、取消、恢复索引和审计事件。
-- 通过本地 Run Event Bus 承载 step 级、系统级、timer / observation window、外部输入和人工确认事件；日志、App WebSocket、UI 观测和截图默认作为证据或 ReAct observation 记录。
-- 在单次 run 内执行定时等待、观察窗口和事件驱动 step；这些机制只推进当前验证流程，不创建外部长期调度。
+- 通过本地 Run Event Bus 承载 step 级、系统级、timer / observation window、外部输入和人工确认事件；
+- 日志、App WebSocket、UI 观测和截图，线上数据快照默认作为证据或 ReAct observation 记录。
+- 在单次 run 内通过受约束的 Runtime Step Graph 编排 step；timer、观察窗口和外部事件只作为 Runtime 判断 step 转移的输入。可以在当前 run 内执行长周期等待和定时检查，但不负责跨 run、跨版本或资产治理级的长期调度系统。
 - 安装、启动、停止和控制真实设备或 Unity Editor 会话。
 - 采集日志、App 侧结构化信号、业务事件、App WebSocket 证据、API/SQL 结果、线上数据快照、UI 观测、截图和设备状态。
-- 支持一个验证 run 下的多个 `ValidationInstance`，并为每个实例产出独立证据链。
-- 产出 instance 级 `ExecutionResult`、`EvidenceBundle`、`ExecutionFact`，以及 run 级聚合结果。
+- 支持一个验证 run 下的多个 `ValidationInstance`，并为每个实例产出独立证据链, 并在 run 级聚合结果。
 - 产出执行证据、诊断信号、本机运行摘要和人工确认后的写回材料。
 - 在人工确认后产出 `ValidatorAssetGenerationMaterial` 和 `ValidationWritebackPackage`。
 - 通过 MCP tools 和 CLI fallback 对代码助手暴露能力。
@@ -151,7 +152,7 @@ AppPilot 运行所需的启动参数、构建参数、多实例目标、App WebS
 
 ### 2.3 Agent Session
 
-AppPilot 的验证任务控制固定由 Codex Agent SDK 承载。AppPilot 不把 Codex Agent SDK 的内部会话协议暴露为外部资产契约，但会把 agent session 的输入、输出、工具调用、检查反馈和人工确认提示作为 run 内审计材料保存。
+Codex Agent SDK 是 AppPilot 的内部执行引擎，不是外部资产契约。AppPilot 不暴露 Codex Agent SDK 的内部会话协议，但会把 agent 收到的输入、输出的计划或反馈、调用过的工具、执行过的证据检查和生成的人工确认提示保存为 run 内审计材料。
 
 初始化 Codex Agent SDK session 时，AppPilot 必须准备并落盘以下内容：
 
@@ -163,7 +164,9 @@ AppPilot 的验证任务控制固定由 Codex Agent SDK 承载。AppPilot 不把
 - Run Event Bus、checkpoint、Evidence Store 和 artifact 索引的读取/写入入口。
 - Agent 预算、心跳策略、异常响应策略和人工确认要求。
 
-启动 Codex Agent SDK session 时，AppPilot 先写入 agent session 初始化记录，再向 agent 提交任务输入。agent 的第一阶段输出应是可审计的计划或计划修正建议；后续所有工具调用、事件响应、证据检查、反馈和人工确认提示都必须写入 `Validation Task` 状态和 run 目录。
+启动 Codex Agent SDK session 时，AppPilot 先写入 agent session 初始化记录，再向 agent 提交任务输入。
+
+agent 的第一阶段输出应是可审计的 plan build 结果或计划修正建议，用于记录 agent 对验证目标、`RuntimeExecutionPlan` 形态、ReAct step、设备、证据通道、工具需求和不确定点的理解。是否进入人工确认由 Runtime 策略决定，不作为每次编译前的固定门禁；后续所有工具调用、事件响应、证据检查、反馈和人工确认提示都必须写入 `Validation Task` 状态和 run 目录。
 
 Agent 在验证任务中负责理解输入、辅助生成或调整执行计划、调用授权工具、检查证据、生成反馈并提示人工确认。AppPilot runtime 负责持久化任务状态、检查点和事件记录，agent session 中断后不得导致 run 状态丢失。
 
@@ -173,7 +176,9 @@ Agent 在验证任务中负责理解输入、辅助生成或调整执行计划�
 
 AppPilot 基于 `ValidatorAsset`、run options、目标设备、构建配置、证据要求和运行策略，编译或命中内部 `RuntimeExecutionPlan`。
 
-`RuntimeExecutionPlan` 是可持久化、可序列化、可缓存的内部执行计划。它把外部声明式步骤转换为 runtime step、ReAct 任务规约或确定性步骤规约、timer 模板、观察窗口和工具调用约束。它不属于外部资产契约，也不得原样写回为外部资产。
+`RuntimeExecutionPlan` 是可持久化、可序列化、可缓存的内部执行计划。它把外部声明式步骤转换为受约束的 step graph、runtime step、ReAct 任务规约或确定性步骤规约、timer 模板、观察窗口和工具调用约束。它不属于外部资产契约，也不得原样写回为外部资产。
+
+Runtime Step Graph 是抽象 schema 层。Agent 或 LLM 只能输出受约束的静态 `RuntimeStepGraphDefinition` JSON，不得输出运行时代码、inline expression 或自由条件。
 
 AppPilot 编译流程：
 
@@ -181,8 +186,8 @@ AppPilot 编译流程：
 ValidatorAsset.executionSteps: ValidatorFlowStep[]
   -> Agent / plan compiler 理解外部声明式意图
   -> RuntimeExecutionPlan
-  -> RuntimeExecutionStep / ReactTaskSpec / RunTimer / ObservationWindowConfig
-  -> device driver / app rpc / evidence collector / scheduler / event bus
+  -> RuntimeStepGraphDefinition / RuntimeExecutionStep / ReactTaskSpec / RunTimer / ObservationWindowConfig
+  -> graph executor / device driver / app rpc / evidence collector / scheduler / event bus
 ```
 
 ```ts
@@ -259,6 +264,93 @@ type RuntimeExecutionStepKind =
   | "react_task"
   // Runtime 直接执行的确定性步骤，不进入 ReAct 循环
   | "runtime_action";
+
+// step 作用范围
+type RuntimeExecutionStepScope =
+  // 在某一个 ValidationInstance 上执行
+  | "instance"
+  // 在本次 run 的所有 ValidationInstance 上执行；图层仍按线性 step 编排，不表达并行节点
+  | "all_instances"
+  // run 级步骤，用于汇总 evidence、对比多个 instance、生成 RunAggregationResult、等待人工确认或判断是否进入写回材料生成
+  | "run";
+
+// step 退出态；graph edge 只能基于受控退出态做转移
+type RuntimeStepExitStatus =
+  // Runtime 验证通过
+  | "step_completed"
+  // step 失败
+  | "step_failed"
+  // step 被阻塞
+  | "step_blocked"
+  // 人工确认通过
+  | "manual_approved"
+  // 人工确认拒绝
+  | "manual_rejected"
+  // run 已取消
+  | "run_cancelled";
+
+// graph edge 可使用的受控事件类型子集
+type RuntimeStepGraphEventType =
+  // 定时器到期
+  | "timer_fired"
+  // 观察窗口开始
+  | "observe_window_started"
+  // 观察窗口结束
+  | "observe_window_finished"
+  // 外部输入到达
+  | "external_event_received"
+  // 人工已确认
+  | "human_confirmed"
+  // 人工已拒绝
+  | "human_rejected";
+
+// step graph 转移条件；只能由前置 step 退出态和可选受控事件组成
+type RuntimeStepGraphEdgeCondition = {
+  // 前置 step 退出态
+  stepExit: RuntimeStepExitStatus;
+  // 可选事件类型；必须来自 RuntimeStepGraphEventType，编译期硬校验
+  eventType?: RuntimeStepGraphEventType;
+};
+
+// step graph 节点；节点只能引用 RuntimeExecutionStep
+type RuntimeStepGraphNode = {
+  // graph 节点 ID，在 graph 内唯一
+  nodeId: string;
+  // 引用的 RuntimeExecutionStep ID
+  stepId: string;
+};
+
+// step graph 边；表达静态 step 间转移规则
+type RuntimeStepGraphEdge = {
+  // edge ID，在 graph 内唯一
+  edgeId: string;
+  // 起始节点 ID
+  fromNodeId: string;
+  // 目标节点 ID；为空表示进入 graph 终止态
+  toNodeId?: string;
+  // 转移条件
+  condition: RuntimeStepGraphEdgeCondition;
+  // 同一 fromNode 下多条边命中时的优先级；数值越小优先级越高
+  priority?: number;
+};
+
+// Runtime step graph 的静态声明；抽象 schema，不绑定具体 runtime 类型
+type RuntimeStepGraphDefinition = {
+  // graph ID
+  graphId: string;
+  // graph schema 版本
+  graphSchemaVersion: string;
+  // 入口节点 ID
+  entryNodeId: string;
+  // graph 节点列表
+  nodes: RuntimeStepGraphNode[];
+  // graph 边列表
+  edges: RuntimeStepGraphEdge[];
+  // 终止节点 ID 列表
+  terminalNodeIds: string[];
+  // step graph skeleton hash；只包含节点、边、入口和终止节点，不包含 step 内部 spec
+  stepGraphHash: string;
+};
 
 // Runtime 验证规则
 type VerificationRule = {
@@ -390,6 +482,8 @@ type RuntimePlanCacheKey = {
   compilerVersion: string;
   // 目标环境签名 hash；由 TargetSignatureInput 的 canonical JSON 计算
   targetSignatureHash: string;
+  // step graph skeleton hash；由 RuntimeStepGraphDefinition 的 canonical JSON 计算
+  stepGraphHash: string;
 };
 
 // RuntimeExecutionPlan 的 timer 模板；实例化为 run 时才生成 RunTimer
@@ -426,6 +520,8 @@ type RuntimeExecutionPlan = {
   compilerVersion: string;
   // Agent 任务计划引用
   agentPlanRef?: string;
+  // step 间静态编排图；只决定 step 转移，不决定 step 是否通过
+  stepGraph: RuntimeStepGraphDefinition;
   // 内部 runtime 执行步骤列表
   steps: RuntimeExecutionStep[];
   // 计划级 timer 模板列表；不得保存 run 内 timer 状态
@@ -452,6 +548,12 @@ type RuntimeExecutionStep = {
   validatorStepId?: string;
   // 步骤类型
   kind: RuntimeExecutionStepKind;
+  // step 作用范围
+  scope: RuntimeExecutionStepScope;
+  // instance 选择器；scope 为 instance 时使用，例如 primary、secondary 或具体 instanceId
+  instanceSelector?: string;
+  // step 内部 spec hash；用于区分 step graph skeleton 和 step 内容缓存
+  stepSpecHash: string;
   // ReAct 任务规约；kind 为 react_task 时必填
   reactTask?: ReactTaskSpec;
   // Runtime 确定性步骤规约；kind 为 runtime_action 时必填
@@ -464,11 +566,17 @@ type RuntimeExecutionStep = {
 ```
 
 - `RuntimeExecutionPlan` 缓存命中后，AppPilot 可以跳过外部 `ValidatorAsset` 的重新解析和 step 编译。
-- 缓存直接复用必须同时满足 `flowIdentityHash`、`validatorAssetHash`、`planSchemaVersion`、`compilerVersion` 和 `targetSignatureHash` 完全一致。
+- 缓存直接复用必须同时满足 `flowIdentityHash`、`validatorAssetHash`、`planSchemaVersion`、`compilerVersion`、`targetSignatureHash` 和 `stepGraphHash` 完全一致。
 - 缓存态 `RuntimeExecutionPlan` 不保存 run 内事件序号、timer 状态、事件处理记录、checkpoint 或 artifact 引用。
 - `targetSignatureHash` 必须使用 `TargetSignatureInput` 生成 canonical JSON 后计算 hash。canonical JSON 规则是：移除 `undefined` 字段、对象 key 按字典序排序、字符串数组去重后按字典序排序、布尔和数字保持原始类型，再对 UTF-8 JSON 字符串计算 `sha256`。
+- `stepGraphHash` 必须使用 `RuntimeStepGraphDefinition` 中的 graph skeleton 字段生成 canonical JSON 后计算 hash。参与字段只包括 `graphSchemaVersion`、`entryNodeId`、`nodes.nodeId`、`nodes.stepId`、`edges.edgeId`、`edges.fromNodeId`、`edges.toNodeId`、`edges.condition`、`edges.priority` 和 `terminalNodeIds`，不得包含 step 内部 `reactTask`、`runtimeAction` 或 artifact 引用。
+- `stepSpecHash` 必须基于单个 `RuntimeExecutionStep` 的内部 spec 计算，用于缓存或比较 step 内容；完整 `planContentHash` 仍用于 `RuntimeExecutionPlan` 完整性校验。
+- 完整 `RuntimeExecutionPlan` 直接复用仍必须满足完整 cache key；`stepGraphHash` 用于独立判断 step 间图骨架是否变化，避免把 step 内部 spec 变化误判为 graph skeleton 变化。
 - 每个 `react_task` 的 `successCriteria.verificationRules` 必须至少包含一条 `required: true` 的规则，否则 plan 编译失败。
 - `verificationRules` 决定 step 是否通过；`expectedEvidence` 只表达 step 通过后的诊断或审计证据，不参与通过判定。
+- graph node 只能引用 `RuntimeExecutionStep`；edge condition 只能使用 `RuntimeStepExitStatus` 和 `RuntimeStepGraphEventType`，不得包含 inline expression、复杂 state 表达、LLM 自由生成条件或任意运行时代码。
+- graph 只决定 step 间转移，不决定 step 是否通过。step 是否通过仍由 Runtime 独立验证 `verificationRules`。
+- 图层不支持并行节点、join、reducer 或 graph-level parallel branch。多设备仍由 `ValidationInstance` 层支持；graph 是线性的 step 编排，每个 step 通过 `scope` 声明作用于某个 instance、全部 instance 或 run 级聚合。
 
 ### 2.5 Run 聚合与结果解释
 
@@ -848,15 +956,59 @@ type ValidationWritebackPackage = {
 - AppPilot 可以生成验证事实候选和 Validator Asset 候选，但不决定外部系统如何创建、修订、替换、发布或裁剪资产。
 - `failed / partial / blocked` run 仍然可以产出证据和 diagnostics。它们只有在显式确认后才可以产出写回材料包。
 
-## 3. Agent 控制
+## 3. Runtime Step Graph 实现选项
 
-### 3.1 控制边界
+### 3.1 选型边界
+
+`RuntimeStepGraphDefinition` 是 AppPilot 的架构契约，运行时图引擎只是实现选择。AppPilot 可以使用 LangGraph JS/TS 承载 step graph 执行，也可以使用更轻量的状态机解释器执行同一份静态 graph schema。无论采用哪种实现，外部资产契约、plan cache、SQLite checkpoint、Evidence Store 和写回材料都不得依赖具体图引擎的内部类型。
+
+本章只讨论 LangGraph 作为实现选项的适用条件。AppPilot 不允许 plan compiler 输出 LangGraph 代码、builder API、运行时 closure、动态 reducer、subgraph 代码或任意 TypeScript 函数。plan compiler 的输出只能是静态 `RuntimeStepGraphDefinition`，再由 AppPilot runtime 翻译为实际执行引擎可运行的结构。
+
+LangGraph 只适合承载 step 编排层，不适合替代 step 内部 ReAct。移动 App 验证的大量不确定性发生在单个 step 内，例如临时弹窗、引导层、A/B 配置、权限申请、登录态变化、网络波动或按钮被遮挡。这些长尾状态需要 runtime observation 和 ReAct 调整，不应在 compile time 穷举成图。
+
+### 3.2 约束条件
+
+如果 AppPilot 采用 LangGraph 实现 Runtime Step Graph，必须满足以下约束：
+
+- Schema 层仍然只暴露 `RuntimeStepGraphDefinition`，不暴露 LangGraph 类型。
+- graph node 只能引用 `RuntimeExecutionStep`，不能内联工具调用、prompt、代码或状态计算。
+- graph edge 只能由 `RuntimeStepExitStatus` 和可选 `RuntimeStepGraphEventType` 组成。
+- edge condition 必须由编译器硬校验，事件类型必须来自受控枚举子集，不能由 LLM 自由生成。
+- 不支持 inline expression、复杂 state 表达、动态 reducer、运行时闭包或任意 TypeScript 代码。
+- 不支持 graph-level parallel branch、join、reducer 或多分支并行调度。
+- 多设备能力仍由 `ValidationInstance` 层表达，step graph 只按线性 step 编排推进。
+- step 是否通过仍由 Runtime 独立验证 `verificationRules`，graph transition 只能消费 Runtime 写入的 step 退出态和受控事件。
+- graph 执行状态必须落入 SQLite checkpoint，不能只依赖图引擎自己的内存或 checkpoint 机制。
+
+### 3.3 收益
+
+LangGraph 的主要收益在于工程实现，而不是扩大 schema 表达力：
+
+- 可以复用成熟的图执行框架来承载 step 间转移、循环边和终止态。
+- 可以把 step graph 的执行记录、节点状态和边触发过程组织成更清晰的 runtime trace。
+- 可以让 `step_completed / step_failed / step_blocked / manual_rejected` 等转移路径在执行层更直接可见。
+- 可以降低 AppPilot 自研 graph executor 的初始工作量。
+- 如果后续需要更复杂的调度能力，可以先在实现层实验，而不污染 AppPilot 的 schema 契约。
+
+这些收益只在“step 间编排”层成立。step 内部仍应保留 ReAct，因为 ReAct 负责处理 runtime observation 中出现的未预期状态。
+
+### 3.4 成本与风险
+
+LangGraph 也会引入额外成本：
+
+- AppPilot 需要维护图引擎适配层，把静态 `RuntimeStepGraphDefinition` 翻译成运行时图。
+- 调试时会多一层执行结构，需要同时查看 graph transition、step state、ReAct iteration、Event Bus 和 checkpoint。
+- LangGraph 的抽象能力强于当前需要，过早使用复杂能力会增加恢复、审计和错误归因成本。
+
+## 4. Agent 控制
+
+### 4.1 控制边界
 
 Agent 控制层基于 Codex Agent SDK 实现，负责理解 `ValidatorAsset` 和 run options、辅助生成或调整 `RuntimeExecutionPlan`、调用授权工具、检查证据、生成反馈并提示人工确认。
 
 Agent 不持有长期资产状态，不直接写入外部资产，也不替代人工确认。AppPilot runtime 必须持久化任务状态、事件、checkpoint、证据索引和确认记录，agent session 中断后不得导致 run 状态丢失。
 
-### 3.2 初始化与启动
+### 4.2 初始化与启动
 
 Codex Agent SDK session 的初始化由 AppPilot runtime 触发。初始化必须发生在 `Validation Task` 创建之后、`RuntimeExecutionPlan` 编译或命中之前。
 
@@ -869,9 +1021,9 @@ Codex Agent SDK session 的初始化由 AppPilot runtime 触发。初始化必�
 - 写入 agent 预算、心跳策略、异常响应策略和人工确认策略。
 - 记录 session 启动时间、SDK 版本和 AppPilot runtime 版本。
 
-启动阶段必须向 Codex Agent SDK 提交本次验证输入，并要求 agent 先产出可审计的计划或计划修正建议。agent 不能绕过 AppPilot runtime 直接修改 step 状态、timer、checkpoint、数据库记录或写回材料。
+启动阶段必须向 Codex Agent SDK 提交本次验证输入，并要求 agent 先产出可审计的 plan build 结果或计划修正建议，说明它对验证目标、`RuntimeExecutionPlan` 形态、ReAct step、设备、证据通道、工具需求和不确定点的理解。是否进入人工确认由 Runtime 策略决定，不作为每次编译前的固定门禁。agent 不能绕过 AppPilot runtime 直接修改 step 状态、timer、checkpoint、数据库记录或写回材料。
 
-### 3.3 Codex SDK 接入
+### 4.3 Codex SDK 接入
 
 AppPilot 使用 `@openai/codex-sdk` 的 TypeScript 接口接入 Codex agent。接入模型是 `Codex -> Thread -> run / runStreamed`。AppPilot 不直接暴露 Codex SDK 的原始 thread 给外部系统，而是封装成内部 `AgentSession`。
 
@@ -1178,10 +1330,14 @@ function buildRuntimePlanPrompt(
     "不要输出 Markdown，不要解释过程，不要写外部资产，不要生成 ValidationWritebackPackage。",
     "RuntimeExecutionPlan 是 AppPilot 内部执行计划，不属于外部 ValidatorAsset 契约。",
     "一个 run 只表达一个验证场景；多个 targetInstances 只表示同一场景下的多设备或 Editor 执行。",
+    "必须输出受约束的 RuntimeStepGraphDefinition 静态 JSON：节点只能引用 RuntimeExecutionStep，边只能由前 step 退出态和可选受控事件类型组成。",
+    "不得输出运行时代码、inline expression、复杂 state 表达或 LLM 自由生成的 edge condition。",
+    "图层不支持并行节点、join、reducer 或 graph-level parallel branch；多设备通过 ValidationInstance 和 step scope 表达。",
+    "graph 只决定 step 间转移，不决定 step 是否通过；step 是否通过必须由 Runtime 验证 verificationRules。",
     "Run Event Bus 只表达 step 级、系统级、timer / observation window、外部输入和人工确认事件；App WebSocket、日志 watcher、UI 观测和截图默认编译为证据采集或 ReAct observation。",
     "iOS UI 控制必须使用 WDA，Android UI 控制必须使用 uiautomator2。",
     "证据要求必须规范化为 EvidenceRequirement，并绑定到 plan 或 step 的 expectedEvidence。",
-    "可缓存 plan 不得包含 run 内事件序号、timer 状态、checkpoint 状态或 artifact 实例引用。",
+    "可缓存 plan 不得包含 run 内事件序号、timer 状态、checkpoint 状态、graph transition 中间态或 artifact 实例引用。",
     "<plan_build_skill>",
     skill.instructions,
     "</plan_build_skill>",
@@ -1305,7 +1461,7 @@ async function buildRuntimeExecutionPlanWithCodex(
 }
 ```
 
-### 3.4 Agent 响应模式
+### 4.4 Agent 响应模式
 
 Agent 在 run 内响应三类事件：
 
@@ -1313,19 +1469,19 @@ Agent 在 run 内响应三类事件：
 - 心跳事件：检查 ReAct 循环是否长时间没有新迭代、step 预算和 run 预算是否接近耗尽。
 - 异常事件：对 step 级失败、工具系统性不可用、Runtime 状态不一致或 run 级预算耗尽做恢复决策。
 
-### 3.5 Agent Review
+### 4.5 Agent Review
 
 证据产出后，agent 检查证据是否充分、结果解释是否成立、失败是否可能来自环境或不稳定因素，并生成反馈。
 
 agent review 可以建议补采证据、重新执行 ReAct step、停止 run 或提示人工介入，但这些建议仍必须通过 AppPilot runtime 记录，并进入人工确认流程。Agent 的检查反馈不能替代人工确认。
 
-### 3.6 恢复规则
+### 4.6 恢复规则
 
 Agent session 恢复以 AppPilot 本地状态为准。恢复时必须先读取 SQLite checkpoint、Run Event Bus 游标、未完成 timer、已处理事件记录、证据索引和 agent 历史输出。
 
 如果原 Codex Agent SDK session 可恢复，AppPilot 绑定原 session 并继续执行。如果原 session 不可恢复，AppPilot 创建新的 Codex Agent SDK session，并把历史 session 的输入、输出、工具调用、检查反馈和人工确认提示作为上下文恢复材料。
 
-### 3.7 Agent Schema
+### 4.7 Agent Schema
 
 Agent schema 只表达 AppPilot runtime 内部的 agent 控制状态、请求、审计、检查反馈、决策记录和人工提示。
 
@@ -1563,9 +1719,9 @@ type AgentHumanPrompt = {
 };
 ```
 
-## 4. ReAct 执行层
+## 5. ReAct 执行层
 
-### 4.1 执行层边界
+### 5.1 执行层边界
 
 ReAct 执行层负责执行 `RuntimeExecutionStep.kind: "react_task"` 的步骤。每个 ReAct step 都是一个任务目标，Agent 在 Runtime 授权的原子工具内执行 `Reasoning -> Acting -> Observing` 循环，直到 Runtime 独立验证 `successCriteria.verificationRules` 通过，或达到退出态。
 
@@ -1577,7 +1733,7 @@ Run Event Bus 只承载 step 级、系统级和外部输入级事件。ReAct ste
 
 step 是否完成只由 Runtime 重新采证并验证 `verificationRules` 决定。Agent 自评、自然语言声明或 `successCriteria.intentDescription` 都不能作为通过结论。
 
-### 4.2 执行流程
+### 5.2 执行流程
 
 ```text
 RuntimeExecutionStep(kind: react_task)
@@ -1594,7 +1750,7 @@ RuntimeExecutionStep(kind: react_task)
 
 普通工具失败不是异常。只有 ReAct 预算耗尽、step 超时、Agent 主动声明 blocked、工具系统性不可用或 Runtime 状态不一致，才进入 step 级失败、blocked 或异常路径。
 
-### 4.3 ReAct 迭代记录 Schema
+### 5.3 ReAct 迭代记录 Schema
 
 ```ts
 // 单轮 ReAct 迭代记录，强制持久化到 agent/ 目录
@@ -1643,7 +1799,7 @@ type ReactIterationRecord = {
 };
 ```
 
-### 4.4 验证反馈 Schema
+### 5.4 验证反馈 Schema
 
 ```ts
 // Runtime 验证 successCriteria 的反馈
@@ -1681,7 +1837,7 @@ type VerificationFeedback = {
 
 verification feedback 默认作为一轮 ReAct observation 计入 `maxIterations`，避免把 Runtime 验证当成免费探测工具。`ReactPolicy.countVerificationAsIteration` 控制这条规则的开关，默认必须为 `true`；如果策略上选择关闭，Runtime 必须在 plan 编译诊断中声明替代的预算保护机制，否则编译失败。
 
-### 4.5 Step 退出态
+### 5.5 Step 退出态
 
 ```ts
 // ReAct 任务退出原因
@@ -1721,9 +1877,9 @@ type ReactDeclareBlockedInput = {
 
 Agent 只能通过 `internal.react.declare_blocked` 声明 blocked。该工具的语义是退出当前 ReAct 循环，并由 Runtime 将 step 转为 `step_blocked`，再发布 step 级事件。它不是普通 observation，也不参与后续 ReAct 推理。
 
-## 5. Event Bus
+## 6. Event Bus
 
-### 5.1 事件总线边界
+### 6.1 事件总线边界
 
 Run Event Bus 是单次 `ValidationRun` 内的本地事件总线。它只记录和分发 run 内发生过的 step 级、系统级和外部输入级事实，例如 step 开始或完成、定时器到期、观察窗口开始或结束、设备安装、外部 hook 输入到达或人工确认完成。事件本身不直接表达 run 的最终通过或失败；验证结论由 runtime step、extractor、result interpretation 和 agent review 基于证据共同判断。
 
@@ -1747,7 +1903,7 @@ Run Event Bus 中的事件分为三类：
 - Step Dispatcher：根据 `RuntimeExecutionPlan`、ReAct 退出态和 Runtime 验证结果推进 step。
 - Agent：对进度、心跳、异常事件做策略响应。
 
-### 5.2 事件 Schema
+### 6.2 事件 Schema
 
 ```ts
 // run 内事件分类
@@ -1940,28 +2096,19 @@ type ExceptionEventPayload = {
 };
 ```
 
-### 5.3 事件生成和消费规则
+### 6.3 事件生成和消费规则
 
-- Run Event Bus 只接收 step 级、系统级、timer / observation window、外部输入和人工确认事件。
-- ReAct 内部 observation 不写入 Run Event Bus；工具单次失败、查找 UI 失败、verification feedback 和普通策略调整都写入 `ReactIterationRecord`。
-- `step_started` 在 Runtime 开始执行一个 `RuntimeExecutionStep` 时写入。
-- `step_completed` 只能由 Runtime 独立验证 `successCriteria.verificationRules` 通过后写入，Agent 自评不能触发该事件。
-- `step_failed` 用于 ReAct 预算耗尽、step 超时或连续 verification 失败超过策略阈值。
-- `step_blocked` 只能由 `internal.react.declare_blocked` 或 Runtime 确认前提不成立后写入。
-- `tool_system_unavailable` 只表达工具系统性不可用，例如 WDA、uiautomator2、App WebSocket bridge 或关键构建工具不可用；单次工具调用错误不是该事件。
-- `runtime_state_inconsistent` 表达 checkpoint、SQLite、artifact 索引或 run 状态不一致。
-- `heartbeat_emitted` 必须设置 `agentResponseMode: "review_health"`，用于检查 step ReAct 循环是否长时间无新迭代、step 预算或 run 预算是否接近耗尽。
-- `exception` 类事件必须设置 `agentResponseMode: "decide_recovery"`，并在 payload 中记录建议动作、关联 step、最近进度事件、最近 ReAct 迭代和支撑证据引用。
-- timer 到期由 scheduler 发布 `timer_fired`，并更新 timer 状态；是否影响当前 step 由 Runtime 按当前 step 状态决定。
-- 观察窗口由 scheduler 发布 `observe_window_started` 和 `observe_window_finished`；事件 payload 必须包含 `windowId`，并尽量携带 `instanceId` 和 `stepId` 用于并发窗口消歧。
-- device watcher 只发布设备生命周期事件和 App 安装、卸载、覆盖安装事件。App 前后台、日志命中、App WebSocket 消息、UI tree、截图和工具结果都作为 ReAct observation 或 evidence artifact 记录，不作为 Run Event Bus 事件。
-- `external_input` 只通过 `external.event.emit` 写入 `external_event_received`，不直接修改 step 状态。
-- 每个事件处理结果必须落库，避免恢复后重复处理同一 step 级或系统级事件。
-- agent 决策不能直接修改 step 状态；它只能产出 recovery decision、review 或 blocked 声明，由 Runtime 记录并推进状态。
+- Run Event Bus 只记录 run 内事实，接收范围限于 step 级、系统级、timer / observation window、外部输入和人工确认事件。日志命中、App WebSocket 消息、UI tree、截图、工具结果和普通策略调整默认写入 evidence artifact 或 `ReactIterationRecord`，不写入 Run Event Bus。
+- step 状态事件只能由 Runtime 写入。`step_completed` 必须来自 Runtime 对 `successCriteria.verificationRules` 的独立验证；`step_failed` 来自预算耗尽、step 超时或连续 verification 失败；`step_blocked` 来自 `internal.react.declare_blocked` 或 Runtime 确认前提不成立。Agent 自评不能触发 step 状态变化。
+- 系统事件只表达系统级事实。`tool_system_unavailable` 表达 WDA、uiautomator2、App WebSocket bridge 或关键构建工具等系统性不可用；单次工具调用错误仍属于 ReAct observation。`runtime_state_inconsistent` 表达 checkpoint、SQLite、artifact 索引或 run 状态不一致。
+- timer 和观察窗口由 Scheduler 写入 `timer_fired`、`observe_window_started` 和 `observe_window_finished`；观察窗口事件 payload 必须包含 `windowId`，并尽量携带 `instanceId` 和 `stepId`。这些事件是否触发 step 转移由 Runtime 根据当前 step 状态和 Runtime Step Graph 决定。
+- 外部输入只能通过 `external.event.emit` 写入 `external_event_received`，不直接修改 step、timer、checkpoint 或验证结果。人工确认事件只记录确认事实，是否推进写回或下一 step 仍由 Runtime 决定。
+- `heartbeat_emitted` 必须使用 `agentResponseMode: "review_health"`；异常类事件必须使用 `agentResponseMode: "decide_recovery"`，并在 payload 中记录建议动作、关联 step、最近进度事件、最近 ReAct 迭代和支撑证据引用。每个事件处理结果必须落库，避免恢复后重复处理。
+- Event Bus 积压超过 `EventBusBackpressurePolicy.pauseThreshold` 时，scheduler 和 watcher 应暂停非关键进度事件、证据采样事件和诊断噪声事件；积压低于 `EventBusBackpressurePolicy.resumeThreshold` 后恢复。关键异常事件仍可写入，但必须去重或限流。
 
-## 6. Timer 与 Scheduler
+## 7. Timer 与 Scheduler
 
-### 6.1 调度边界
+### 7.1 调度边界
 
 Timer 与 Scheduler 是 run 内部机制。它们用于延迟检查、跨小时或跨天观察窗口、心跳触发和事件唤醒，不创建外部长期调度任务。
 
@@ -1969,7 +2116,7 @@ Timer 与 Scheduler 是 run 内部机制。它们用于延迟检查、跨小时�
 
 Scheduler 只把 timer 到期、心跳条件和观察窗口边界转换为事件，并更新本地调度状态。是否推进 step 由 Runtime 根据当前 step 状态、ReAct 退出态和 Runtime 验证结果决定。
 
-### 6.2 Timer Schema
+### 7.2 Timer Schema
 
 ```ts
 // run 内定时器
@@ -2010,16 +2157,15 @@ type RunTimer = {
 };
 ```
 
-### 6.3 调度规则
+### 7.3 调度规则
 
 - `intervalMs` 只是心跳兜底；`step_react_stall`、`step_budget_usage` 和 `run_budget_usage` 应作为 `HeartbeatEventPayload.reason` 触发 heartbeat。
-- Event Bus 积压超过 `EventBusBackpressurePolicy.pauseThreshold` 时，scheduler 和 watcher 应暂停非关键进度事件、证据采样事件和诊断噪声事件；积压低于 `EventBusBackpressurePolicy.resumeThreshold` 后恢复。关键异常事件仍可写入，但必须去重或限流。
 - timer 到期时，scheduler 必须以事务方式同时更新 timer 状态并写入 `timer_fired` 事件。
 - 观察窗口开始和结束时，scheduler 必须分别写入 `observe_window_started` 和 `observe_window_finished` 事件，事件 payload 必须包含 `windowId`。
 
-## 7. 长任务与 Checkpoint
+## 8. 长任务与 Checkpoint
 
-### 7.1 长任务状态 Schema
+### 8.1 长任务状态 Schema
 
 AppPilot 验证任务是长任务，只能在阶段边界安全恢复。
 
@@ -2085,6 +2231,12 @@ type ValidationTaskCheckpoint = {
   inputHash: string;
   // 阶段输出引用列表
   outputRefs: string[];
+  // 检查点对应的 graph 节点 ID
+  graphNodeId?: string;
+  // 检查点对应的最近 graph edge ID
+  triggeredEdgeId?: string;
+  // 检查点写入时仍未完成处理的转移事件 ID 列表
+  pendingTransitionEventIds?: string[];
   // 阶段完成时间
   completedAt: string;
 };
@@ -2105,6 +2257,12 @@ type ValidationTask = {
   state: ValidationTaskState;
   // 当前阶段名称
   currentPhase?: string;
+  // 当前 graph 节点 ID
+  currentGraphNodeId?: string;
+  // 最近一次触发的 graph edge ID
+  lastTriggeredEdgeId?: string;
+  // 已触发但尚未完成处理的转移事件 ID 列表
+  pendingTransitionEventIds?: string[];
   // 本任务在本地状态数据库中的记录引用
   stateDbRef?: string;
   // 任务输入引用
@@ -2167,7 +2325,7 @@ type ValidationTask = {
 };
 ```
 
-### 7.2 检查点规则
+### 8.2 检查点规则
 
 - `RuntimeExecutionPlan` 确定后，AppPilot 初始化 SQLite checkpoint。checkpoint 负责恢复边界，必须和任务状态、事件游标、timer 状态、artifact 引用保持一致。
 - 任务只能从已完成的阶段边界恢复。
@@ -2175,17 +2333,18 @@ type ValidationTask = {
 - 已确认的 `ExecutionFact` 不做原地覆盖。
 - 验证需求或验证流程变化时，调用方必须启动新的 run。
 - 检查点、任务状态和事件索引必须先写入本地状态数据库，再暴露给 `validation_status` 和恢复调度。
+- 引入 Runtime Step Graph 后，恢复边界必须覆盖 graph transition 中间态。`step_completed`、edge 触发和下一 step 启动之间必须以事务方式记录 `currentGraphNodeId`、`lastTriggeredEdgeId` 和 `pendingTransitionEventIds`，避免进程中断后丢失已触发但未完成的转移。
 - scheduler 到期必须以事务方式同时更新 timer 状态并写入 `timer_fired` 事件；被唤醒 step 和状态推进由 Runtime 事件处理记录表达。
 - 外部输入事件必须支持 `idempotencyKey` 去重，避免 hook 重放导致重复推进。
 - Runtime 处理 step 级或系统级事件后必须写入 `DbEventProcessingRecord`；恢复时以该记录判断事件处理是否已经执行。
 
-## 8. 本地数据库
+## 9. 本地数据库
 
-### 8.1 数据库边界
+### 9.1 数据库边界
 
 AppPilot 使用小型本地 SQLite 数据库作为任务控制的状态核心。数据库负责 run、validation instance、evidence instance、checkpoint、状态恢复、任务审计事件、run 内事件 bus、timer、runtime 健康状态、事件处理记录、runtime plan cache 索引和 artifact 引用索引；大体积 artifact 正文仍然保存在 run 目录中。
 
-### 8.2 数据库路径
+### 9.2 数据库路径
 
 数据库路径：
 
@@ -2193,7 +2352,7 @@ AppPilot 使用小型本地 SQLite 数据库作为任务控制的状态核心。
 ~/.apppilot/state/apppilot.sqlite
 ```
 
-### 8.3 数据库记录 Schema
+### 9.3 数据库记录 Schema
 
 数据库使用 WAL 模式。每个阶段边界必须在同一个事务中写入任务状态、任务审计事件、run 内事件、timer 状态、事件处理记录、checkpoint 记录和新增 artifact 引用。这样即使进程中断，恢复流程也能从数据库中找到最后一个一致的 checkpoint。
 
@@ -2232,6 +2391,12 @@ type DbValidationRunRecord = {
   state: ValidationTaskState;
   // 当前阶段名称
   currentPhase?: string;
+  // 当前 graph 节点 ID
+  currentGraphNodeId?: string;
+  // 最近一次触发的 graph edge ID
+  lastTriggeredEdgeId?: string;
+  // 已触发但尚未完成处理的转移事件 ID 列表
+  pendingTransitionEventIds?: string[];
   // run 目录路径
   runDir: string;
   // 最近一个可恢复检查点 ID
@@ -2427,6 +2592,8 @@ type DbRuntimePlanCacheRecord = {
   compilerVersion: string;
   // 目标环境签名 hash
   targetSignatureHash: string;
+  // step graph skeleton hash
+  stepGraphHash: string;
   // RuntimeExecutionPlan JSON artifact 引用
   planArtifactRef: string;
   // RuntimeExecutionPlan 内容 hash
@@ -2463,6 +2630,12 @@ type DbCheckpointRecord = {
   stateBefore: ValidationTaskState;
   // 检查点写入后的任务状态
   stateAfter: ValidationTaskState;
+  // 检查点对应的 graph 节点 ID
+  graphNodeId?: string;
+  // 检查点对应的最近 graph edge ID
+  triggeredEdgeId?: string;
+  // 检查点写入时仍未完成处理的转移事件 ID 列表
+  pendingTransitionEventIds?: string[];
   // 是否可作为恢复起点
   resumable: boolean;
   // 检查点完成时间
@@ -2643,7 +2816,7 @@ type LocalRunSummary = {
 };
 ```
 
-### 8.4 恢复规则
+### 9.4 恢复规则
 
 - AppPilot 启动时扫描数据库中 `running / interrupted` 的 run，生成 `DbRecoveryRecord`。
 - 恢复只从 `resumable: true` 的最近 checkpoint 开始。
@@ -2652,9 +2825,10 @@ type LocalRunSummary = {
 - 如果数据库记录存在但 run 目录缺失，任务进入 `failed`，错误码为 `TASK_INTERRUPTED`。
 - 恢复扫描必须重新加载未完成的 `DbRunTimerRecord`，对已过期但未写入事件的 timer 补发 `timer_fired`。
 - 恢复扫描必须重新读取未处理的 `DbRunEventRecord`，但不得重复执行已有 `DbEventProcessingRecord` 对应的事件处理结果。
+- 恢复扫描必须恢复 graph transition 中间态。如果 `lastTriggeredEdgeId` 已存在但 `currentGraphNodeId` 尚未更新到目标节点，Runtime 必须根据 `pendingTransitionEventIds` 和 `DbEventProcessingRecord` 判断该 edge 是否已经处理，避免重复启动下一 step 或丢失下一 step。
 - `events.ndjson` 是数据库事件表的可读导出，不是恢复的唯一依据。
 
-### 8.5 实例索引规则
+### 9.5 实例索引规则
 
 - `ValidationRun` 表达一次逻辑验证任务和一个唯一场景，`ValidationInstance` 表达该场景下的一次具体设备执行实例。
 - 多实例验证由 run options 显式声明，只表示同一场景下的多设备或可选 Editor 会话执行。
@@ -2664,12 +2838,14 @@ type LocalRunSummary = {
 - 多设备执行时，默认每台设备一个 `ValidationInstance`。
 - 默认情况下，一个设备或一个 Editor 会话对应一个 `ValidationInstance`。
 - 显式 `instances` 只用于指定设备、模拟器、required、控制配置和启动参数覆盖，不用于表达场景拆分。
+- Runtime Step Graph 不表达并行节点。多设备执行仍由 `ValidationInstance` 层支持；graph 节点引用的 step 通过 `scope` 声明作用于单个 instance、全部 instance 或 run 级聚合。
+- run 级 step 可以汇总多个 instance 的 evidence、对比 A/B 设备数据、生成 `RunAggregationResult`、等待人工确认，或判断是否进入写回材料生成。
 - run 级 `ExecutionResult` 不是某个设备的原始结果，而是 `RunAggregationResult` 的摘要。
 - 写回材料必须保留参与确认的 `instanceIds` 和 `evidenceInstanceIds`，不得把未确认实例纳入确认范围。
 
-## 9. MCP 工具契约
+## 10. MCP 工具契约
 
-### 9.1 本地入口
+### 10.1 本地入口
 
 安装后的 agent 入口：
 
@@ -2680,7 +2856,7 @@ type LocalRunSummary = {
 
 宿主代码助手可以注入 AppPilot 直连工具。未注入时，`~/.apppilot/apppilot-mcp-call` 是稳定 fallback。
 
-### 9.2 工具边界
+### 10.2 工具边界
 
 AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent 工具。
 
@@ -2695,7 +2871,7 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - 对外 agent 工具必须返回稳定材料引用，不暴露内部 step、timer、event cursor 或数据库主键。
 - 对内 AppPilot agent 工具可以返回内部引用，但必须绑定 `agentSessionId`、`runId`、权限策略和审计记录。
 
-### 9.3 工具披露规则
+### 10.3 工具披露规则
 
 - 每个会改变设备、任务、数据库或 evidence store 的工具都必须返回稳定引用。
 - 每个证据采集工具都必须写入 run 证据目录，并在 SQLite 中登记 artifact 引用。
@@ -2706,7 +2882,7 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - 对外工具不得返回未脱敏的原始 artifact 正文；只能返回 artifact ref、摘要、hash、确认提示或导出材料。
 - 对内工具返回的原始输出必须进入 Evidence Store 或 agent audit，再由对外工具选择性导出。
 
-### 9.4 对外 Agent 工具组
+### 10.4 对外 Agent 工具组
 
 对外 agent 工具组只提供稳定、高层、可审计的验证入口：
 
@@ -2721,7 +2897,7 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - `external.event.emit`：写入外部 hook 事件；只允许写入 `external_event_received`，不直接修改 step 状态。
 - `external.coverage.advisory`：基于本机运行记录给出本地覆盖建议，不做权威覆盖判断。
 
-### 9.5 对内 AppPilot Agent 工具组
+### 10.5 对内 AppPilot Agent 工具组
 
 对内 AppPilot agent 工具组是内部执行原子能力，默认只授权给 AppPilot runtime 和受控内部 agent：
 
@@ -2749,7 +2925,7 @@ AppPilot MCP tools 必须严格区分对外 agent 工具和对内 AppPilot agent
 - `internal.db.task_update`：更新 `Validation Task` 本地状态。
 - `internal.audit.write`：写入 agent、工具调用、事件处理和人工确认审计记录。
 
-### 9.6 工具 Schema
+### 10.6 工具 Schema
 
 本节定义 MCP 工具函数名、调用参数和返回结构。两类 schema 不得混用：对外 schema 只接受稳定输入契约、行为事实、运行约束、人工确认和导出查询参数；对内 schema 可以接受 step、timer、event cursor、device session、agent session、checkpoint 和 artifact 内部引用。
 
@@ -3602,9 +3778,9 @@ type InternalMcpTool =
     };
 ```
 
-## 10. 构建
+## 11. 构建
 
-### 10.1 构建边界
+### 11.1 构建边界
 
 构建产物也是普通 artifact，可以被验证 run 引用。AppPilot 的构建契约面向 App，不限定 Unity；Unity、Xcode、Gradle、Flutter、React Native 或 custom command 都通过构建能力表达。
 
@@ -3789,15 +3965,15 @@ type BuildCacheKey = {
 };
 ```
 
-### 10.2 构建策略
+### 11.2 构建策略
 
 构建是 run 级或构建产物级动作。AppPilot 可以为本次 run 构建 App，也可以复用已存在且满足约束的构建产物。
 
 当 run options 声明需要构建时，验证 runtime 可以先执行构建。否则它使用调用方提供的兼容构建产物，或使用 AppPilot artifact store 中最近的兼容构建产物。
 
-## 11. 设备与 App 控制
+## 12. 设备与 App 控制
 
-### 11.1 支持能力
+### 12.1 支持能力
 
 AppPilot 支持：
 
@@ -3812,7 +3988,7 @@ AppPilot 支持：
 - 通过 App WebSocket bridge 采集 App WebSocket 证据或调用 App 侧 JSON-RPC。
 - 通过 App WebSocket bridge 接收 App WebSocket 证据。
 
-### 11.2 设备控制后端边界
+### 12.2 设备控制后端边界
 
 - 实例级动作负责 install、launch 或 attach。
 - 每个 `ValidationInstance` 启动后，需要连接本次验证所需通道，包括 device driver、Editor、App 侧 RPC、App WebSocket 和 evidence tools。
@@ -3822,7 +3998,7 @@ AppPilot 支持：
 - uiautomator2 只负责 Android UI 交互和 UI 观测证据。
 - 设备控制配置未显式传入时，AppPilot 按平台选择默认后端：iOS 为 `wda`，Android 为 `uiautomator2`。
 
-### 11.3 App WebSocket Bridge
+### 12.3 App WebSocket Bridge
 
 App WebSocket bridge 是双向通信通道：
 
@@ -3833,13 +4009,13 @@ App WebSocket bridge 是双向通信通道：
 
 App WebSocket 读取到的 scene hierarchy 和 node 属性属于 App 内部观测证据。它可以辅助定位交互对象、解释 App 状态或生成结构化执行事实，但不等同于设备 UI 后端；真实设备 UI 控制仍由 WDA 或 uiautomator2 执行。
 
-## 12. 证据获取
+## 13. 证据获取
 
-### 12.1 Extractor 边界
+### 13.1 Extractor 边界
 
 `evidence_extractors` 属于外部 `ValidatorAsset` 输入契约。AppPilot 负责执行 extractor、保存 extractor 结果并生成 `ExecutionFact`，但本章不重复定义 extractor 字段。
 
-### 12.2 证据产出 Schema
+### 13.2 证据产出 Schema
 
 AppPilot 在 instance 执行过程中采集日志、App 侧结构化信号、业务事件、App WebSocket 证据、API/SQL 结果、线上数据快照、UI 观测、截图和设备状态。
 
@@ -3963,7 +4139,7 @@ type Diagnostic = {
 };
 ```
 
-### 12.3 典型提取方式
+### 13.3 典型提取方式
 
 - 从日志 selector 提取结构化 predicate。
 - 从 App 侧结构化信号提取 observed value。
@@ -3974,15 +4150,15 @@ type Diagnostic = {
 - 把截图作为证据引用绑定到事实。
 - 从设备状态快照提取环境事实。
 
-## 13. Evidence Store
+## 14. Evidence Store
 
-### 13.1 存储边界
+### 14.1 存储边界
 
 Evidence Store 负责保存一次 run 的原始 artifact、结构化证据包、执行事实、人工确认材料和写回材料引用。SQLite 只保存状态、索引、checkpoint 和引用；大体积 artifact 正文保存在 run 级证据目录中。
 
 Evidence Store 采用 run 级目录结构。现有 `~/.apppilot/artifact` 可以继续作为 legacy artifact 目录或构建产物缓存；进入验证 run 后，所有证据都必须复制、链接或登记到对应 run 的 Evidence Store，并在 SQLite 中登记 artifact 引用。
 
-### 13.2 目录结构
+### 14.2 目录结构
 
 Evidence Store 建议目录结构：
 
@@ -4065,9 +4241,9 @@ Evidence Store 建议目录结构：
 - `local_run_summary` 只导出本机观察记录，不做权威覆盖判断。
 - 删除或清理 Evidence Store 前必须先确认没有未导出的写回材料、未完成确认提示或可恢复 checkpoint。
 
-## 14. 安全规则
+## 15. 安全规则
 
-### 14.1 Runtime Safety Policy
+### 15.1 Runtime Safety Policy
 
 `RuntimeSafetyPolicy` 属于 runtime 安全策略，不属于 Timer Schema。它定义 runtime tick、ReAct 循环策略、心跳触发、Event Bus backpressure 和异常响应边界；Scheduler 只根据这些策略产出 timer、观察窗口和 heartbeat 事件，Agent 只根据 Run Event Bus 中的事件做策略响应，step 状态仍由 runtime 统一写入。
 
@@ -4157,27 +4333,19 @@ type RuntimeSafetyPolicy = {
 
 同一事件类型命中多个异常处理列表时，优先级固定为 `stopEventTypes > humanPromptEventTypes > degradableEventTypes`。Event Bus 积压不触发 heartbeat；积压超过 `pauseThreshold` 时，runtime 暂停非关键事件产出，低于 `resumeThreshold` 后恢复。
 
-### 14.2 执行与写回安全
+### 15.2 执行与写回安全
 
-- AppPilot 不直接写外部 consumption snapshot 或 published index。
-- AppPilot 不在缺少人工确认时产出写回材料包。
-- 本地 SQLite 数据库只保存状态、索引、checkpoint 和引用，不保存大体积 artifact 正文。
-- 阶段边界的任务状态、事件、checkpoint 和 artifact 引用必须在同一数据库事务中提交。
-- Agent 只能调用已授权的工具和参数。
-- Agent 的检查反馈不能替代人工确认。
-- `RuntimeExecutionPlan` 和 `RuntimeExecutionStep` 是内部执行产物，不得原样写回为外部 `ValidatorAsset`。
-- 写回候选必须先生成明确的 `ValidatorFlowStep` 等 `ValidatorAsset` 字段，并经过人工确认。
-- 多实例 run 中，instance 级证据必须带 `instanceId`；证据实例必须带 `evidenceInstanceId`。
-- run 级结论必须来自 `RunAggregationResult`，不能任选某个实例结果作为总结果。
-- 已确认 run 只覆盖确认范围中的平台、场景、设备、App 版本、SDK 版本、OS 版本和网络环境。
-- 已确认的 `ExecutionFact` 不做原地覆盖。
-- 原始 artifact 可以在导出前做脱敏，但必须在 artifact ref 中记录 redaction。
-- 缺少 required evidence 时必须输出 `partial` 或 `blocked`，不能输出 `passed`。
-- extractor confidence 不能解释为长期资产可信度。
+- AppPilot 只产出可供外部系统消费的材料，不直接写外部 consumption snapshot、published index 或资产治理状态。
+- 缺少人工确认时不得产出 `ValidationWritebackPackage`。Agent review 不能替代人工确认，写回候选也必须转换为明确的外部资产字段后再进入确认流程。
+- `RuntimeExecutionPlan`、`RuntimeExecutionStep` 和 `RuntimeStepGraphDefinition` 都是内部执行产物，不得原样写回为外部 `ValidatorAsset`。
+- SQLite 只保存任务状态、索引、checkpoint 和 artifact 引用；大体积 artifact 正文必须保存在 Evidence Store。阶段边界的任务状态、事件、checkpoint 和 artifact 引用必须在同一数据库事务中提交。
+- Agent 只能调用已授权的工具和参数；cancellation 只能阻止后续动作，不能删除已经写出的证据。
+- 多实例 run 中，instance 级证据必须带 `instanceId`，证据实例必须带 `evidenceInstanceId`。run 级结论必须来自 `RunAggregationResult`，不能任选某个实例结果作为总结果。
+- 缺少 required evidence 时必须输出 `partial` 或 `blocked`，不能输出 `passed`。已确认 run 只覆盖确认范围中的平台、场景、设备、App 版本、SDK 版本、OS 版本和网络环境。
+- 已确认的 `ExecutionFact` 不做原地覆盖；extractor confidence 不能解释为长期资产可信度。原始 artifact 导出前可以脱敏，但必须在 artifact ref 中记录 redaction。
 - `failed / partial / blocked / interrupted` 的 diagnostics 必须保留用于审计。
-- cancellation 只能阻止后续动作，不删除已经写出的证据。
 
-### 14.3 人工确认边界
+### 15.3 人工确认边界
 
 人工确认用于确认执行结果、证据范围、诊断解释和准备回流的材料。没有人工确认，AppPilot 不应把本次 run 的结果包装为可写回材料。
 
@@ -4276,9 +4444,9 @@ type HumanConfirmationRecord = {
 
 提交的 `result` 与 `confirmationType` 不匹配时，AppPilot 必须拒绝该确认输入，并在输出中返回 `accepted: false`，不改变任务状态。
 
-## 15. 错误处理
+## 16. 错误处理
 
-### 15.1 错误 Schema
+### 16.1 错误 Schema
 
 错误使用稳定 code 和 recoverable 字段表达。
 
@@ -4320,13 +4488,13 @@ type AppPilotError = {
 };
 ```
 
-### 15.2 恢复语义
+### 16.2 恢复语义
 
 可恢复错误可以按阶段重试。不可恢复错误使验证任务进入 `failed` 或 `blocked`，具体取决于验证流程是否到达验证触点。
 
-## 16. 审计与重放
+## 17. 审计与重放
 
-### 16.1 必须记录的审计材料
+### 17.1 必须记录的审计材料
 
 每次验证 run 必须记录：
 
@@ -4345,6 +4513,6 @@ type AppPilotError = {
 - 人工确认记录。
 - 写回材料包。
 
-### 16.2 重放要求
+### 17.2 重放要求
 
 给定同一个 run 目录，AppPilot 应能在不重新执行设备流程的情况下，基于 `ReactIterationRecord` 完整轨迹、Evidence Store、SQLite 事件记录和 artifact 索引，重放证据提取、Runtime 验证和写回材料包生成。
