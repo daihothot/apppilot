@@ -57,7 +57,7 @@ AppPilot 采用本地优先的运行方式。运行文件写入 `~/.apppilot`。
 
 ### 2.2 主链路关键门禁
 
-主链路门禁用于区分“无法开始或无法到达验证触点”和“到达验证触点后的验证失败”。命中 run 级门禁时，`Validation Task` 必须立即转入 `blocked`，不得继续执行后续阶段；命中 step 级门禁时，当前 step 必须转入 `step_blocked`，不得转入 `step_failed`。
+主链路门禁用于区分“无法开始或无法采集可信证据”和“证据充分后的语义解释失败”。命中 run 级门禁时，`Validation Task` 必须立即转入 `blocked`，不得继续执行后续阶段；命中 step 级门禁时，当前 step 必须转入 `step_blocked`，不得转入语义 `failed`。
 
 以下条件任一满足，run 必须立即转入 `blocked`：
 
@@ -72,8 +72,8 @@ AppPilot 采用本地优先的运行方式。运行文件写入 `~/.apppilot`。
 
 以下条件任一满足，当前 step 必须转入 `step_blocked`：
 
-- Agent 主动声明 `availableTools` 不足，无法达成当前 step 的 `successCriteria`
-- Agent 主动声明 `successCriteria` 的前提条件不成立
+- Agent 主动声明 `availableTools` 不足，无法采集当前 step 的 required evidence
+- Agent 主动声明当前 step 的 evidence requirements 前提条件不成立
 - required evidence channel 系统性不可用，导致 Runtime 无法完成必要验证
 
 这些门禁不表达验证事实失败，只表达 AppPilot 无法继续可靠执行或无法到达验证触点。所有门禁必须写入任务状态、诊断信息和审计材料；如果已产生证据或 artifact，仍必须保留用于恢复和复盘。
@@ -261,20 +261,70 @@ type ArtifactType =
   // 回流或写回材料
   | "writeback_material";
 
-// RuntimeExecutionPlan 中声明的证据要求
+// 证据选择器必须按 channel 类型化，不能使用自由自然语言 selector。
+type EvidenceSelector =
+  | {
+      channel: "log";
+      contains: string;
+      tag?: string;
+    }
+  | {
+      channel: "app_ws";
+      method?: string;
+      jsonPath?: string;
+      equals?: unknown;
+    }
+  | {
+      channel: "api";
+      endpoint: string;
+      jsonPath?: string;
+      equals?: unknown;
+    }
+  | {
+      channel: "sql";
+      queryRef: string;
+      jsonPath?: string;
+    }
+  | {
+      channel: "ui";
+      path?: string;
+      textContains?: string;
+      statePath?: string;
+    }
+  | {
+      channel: "screenshot";
+      region?: string;
+      description: string;
+    }
+  | {
+      channel: "device_state";
+      field: string;
+      equals?: unknown;
+    }
+  | {
+      channel: "app_signal" | "business_event" | "data_snapshot";
+      signal: string;
+      jsonPath?: string;
+      equals?: unknown;
+    };
+
+// RuntimeExecutionPlan 中声明的证据要求。required 只表示必须采集到可信证据，
+// 不表示 Runtime 要据此判定业务语义 passed / failed。
 type EvidenceRequirement = {
   // 证据要求 ID；为空时由 AppPilot 生成
   requirementId?: string;
   // 证据通道
   channel: EvidenceChannel;
-  // 证据选择器，例如日志关键字、JSON path、UI query、API endpoint 或 SQL query
-  selector?: string;
-  // 是否为判定结果必需的证据
+  // 类型化证据选择器；selector.channel 必须与 channel 一致
+  selector?: EvidenceSelector;
+  // 是否为 Agent 解释和人工 review 必需的证据
   required?: boolean;
   // 证据用途
-  purpose?: "assertion" | "diagnostic" | "context" | "audit";
+  purpose?: "semantic_interpretation" | "diagnostic" | "context" | "audit";
   // 采集范围
   scope?: "run" | "instance" | "step";
+  // 证据来自哪个验证实例；多设备场景必须填写或由 step.instanceSelector 继承
+  instanceSelector?: string;
   // 关联的验证事实 ID 列表
   validationFactIds?: string[];
   // 证据通道长时间无信号的诊断阈值；用于 ReAct 观察和诊断，不直接发布 Event Bus 心跳
@@ -283,7 +333,7 @@ type EvidenceRequirement = {
 
 // 内部 runtime 执行步骤类型
 type RuntimeExecutionStepKind =
-  // ReAct 任务，由 Agent 在授权工具内自主推理达成 successCriteria
+  // ReAct 任务，由 Agent 在授权工具内自主推理、执行动作和提交证据
   | "react_task"
   // Runtime 直接执行的确定性步骤，不进入 ReAct 循环
   | "runtime_action";
@@ -299,11 +349,11 @@ type RuntimeExecutionStepScope =
 
 // step 退出态；graph edge 只能基于受控退出态做转移
 type RuntimeStepExitStatus =
-  // Runtime 验证通过
-  | "step_completed"
-  // step 失败
-  | "step_failed"
-  // step 被阻塞
+  // step 执行完成，并且 required evidence 已可信采集
+  | "step_evidence_collected"
+  // step 执行完成，但 required evidence 不足，不能进入语义解释
+  | "step_evidence_insufficient"
+  // step 因工具、前提或证据通道不可用被阻塞
   | "step_blocked"
   // 人工确认通过
   | "manual_approved"
@@ -375,28 +425,40 @@ type RuntimeStepGraphDefinition = {
   stepGraphHash: string;
 };
 
-// Runtime 验证规则
-type VerificationRule = {
-  // 规则 ID，在同一个 step 内唯一
-  ruleId: string;
-  // 证据通道
-  channel: EvidenceChannel;
-  // 证据选择器，例如日志关键字、UI query、App WebSocket JSON path、API endpoint 或 SQL query
-  selector: string;
-  // 规则是否必须通过；required 为 true 的规则决定 step 是否可以通过
-  required: boolean;
-  // 规则用途
-  purpose: "assertion" | "context";
-  // 规则可读描述
-  description?: string;
+// Agent 给人工 review 的语义解释指引。它只指导解释，不参与 Runtime passed / failed 判断。
+type InterpretationHint = {
+  // 这条 hint 针对哪个证据通道
+  evidenceChannel: EvidenceChannel;
+  // Agent 应如何解释该证据
+  interpretAs: string;
+  // 直接证据、间接证据或佐证证据
+  evidenceType: "direct" | "indirect" | "corroborating";
 };
 
-// step 完成条件；Runtime 只能依据 verificationRules 判定 step 是否通过
-type StepSuccessCriteria = {
-  // 给 Agent 看的意图描述，仅用于驱动 ReAct 推理；Runtime 不得依据该字段判定 step 是否通过
-  intentDescription: string;
-  // Runtime 独立验证规则；必须至少包含一条 required 为 true 的规则
-  verificationRules: VerificationRule[];
+// ReAct step 中建议的动作。actions 是建议序列，不是固定脚本；
+// Agent 执行时可以调整，但不能偏离 step.intent。
+type StepActionSpec = {
+  // 建议调用的工具，必须来自 availableTools
+  tool: string;
+  // 建议输入；可以为空，由 Agent 根据 observation 调整
+  inputHint?: unknown;
+  // 该动作期望触发或观察到什么
+  expectedObservation?: string;
+};
+
+// 当前 step 的证据计划。Runtime 只校验证据是否可信采集到；
+// 业务语义 passed / failed 由 run 结束后的 Agent 解释和确认策略决定。
+type StepEvidencePlan = {
+  // step 要达成的单一 intent
+  intent: string;
+  // 建议动作序列，Agent 可调整但不得偏离 intent
+  actions?: StepActionSpec[];
+  // 当前 step 必须采集的证据
+  evidenceRequirements: EvidenceRequirement[];
+  // 给 Agent 和人工 review 的解释指引
+  interpretationHints?: InterpretationHint[];
+  // 采集不到可信证据时进入 step_blocked 的条件
+  blockWhen: string[];
 };
 
 // 观察窗口配置
@@ -437,8 +499,8 @@ type ObservationWindowEventPayload = {
 type ReactTaskSpec = {
   // 给 Agent 看的意图描述，用于驱动 ReAct 推理
   intent: string;
-  // Runtime 独立验证的完成条件
-  successCriteria: StepSuccessCriteria;
+  // step 的动作、证据和解释指引计划
+  evidencePlan: StepEvidencePlan;
   // 授权给 Agent 的工具名称列表
   availableTools: string[];
   // ReAct 循环最大轮数
@@ -543,7 +605,7 @@ type RuntimeExecutionPlan = {
   compilerVersion: string;
   // Agent 任务计划引用
   agentPlanRef?: string;
-  // step 间静态编排图；只决定 step 转移，不决定 step 是否通过
+  // step 间静态编排图；只决定 step 转移，不决定业务语义是否通过
   stepGraph: RuntimeStepGraphDefinition;
   // 内部 runtime 执行步骤列表
   steps: RuntimeExecutionStep[];
@@ -581,7 +643,7 @@ type RuntimeExecutionStep = {
   reactTask?: ReactTaskSpec;
   // Runtime 确定性步骤规约；kind 为 runtime_action 时必填
   runtimeAction?: RuntimeActionSpec;
-  // step 通过后仍要采集或绑定的诊断、审计证据；不参与 step 通过判定
+  // step 需要额外绑定的诊断或审计证据；不参与业务语义 passed / failed 判定
   expectedEvidence?: EvidenceRequirement[];
   // 步骤超时时间
   timeoutMs?: number;
@@ -595,10 +657,10 @@ type RuntimeExecutionStep = {
 - `stepGraphHash` 必须使用 `RuntimeStepGraphDefinition` 中的 graph skeleton 字段生成 canonical JSON 后计算 hash。参与字段只包括 `graphSchemaVersion`、`entryNodeId`、`nodes.nodeId`、`nodes.stepId`、`edges.edgeId`、`edges.fromNodeId`、`edges.toNodeId`、`edges.condition`、`edges.priority` 和 `terminalNodeIds`，不得包含 step 内部 `reactTask`、`runtimeAction` 或 artifact 引用。
 - `stepSpecHash` 必须基于单个 `RuntimeExecutionStep` 的内部 spec 计算，用于缓存或比较 step 内容；完整 `planContentHash` 仍用于 `RuntimeExecutionPlan` 完整性校验。
 - 完整 `RuntimeExecutionPlan` 直接复用仍必须满足完整 cache key；`stepGraphHash` 用于独立判断 step 间图骨架是否变化，避免把 step 内部 spec 变化误判为 graph skeleton 变化。
-- 每个 `react_task` 的 `successCriteria.verificationRules` 必须至少包含一条 `required: true` 的规则，否则 plan 编译失败。
-- `verificationRules` 决定 step 是否通过；`expectedEvidence` 只表达 step 通过后的诊断或审计证据，不参与通过判定。
+- 每个 `react_task` 的 `evidencePlan.evidenceRequirements` 必须至少包含一条 `required: true` 的证据要求，否则 plan 编译失败。
+- 每个 `react_task` 必须包含 `instanceSelector`、`evidencePlan.blockWhen` 和类型化 `EvidenceSelector`；Runtime 只判断证据是否可信采集到。
 - graph node 只能引用 `RuntimeExecutionStep`；edge condition 只能使用 `RuntimeStepExitStatus` 和 `RuntimeStepGraphEventType`，不得包含 inline expression、复杂 state 表达、LLM 自由生成条件或任意运行时代码。
-- graph 只决定 step 间转移，不决定 step 是否通过。step 是否通过仍由 Runtime 独立验证 `verificationRules`。
+- graph 只决定 step 间转移，不决定业务语义是否通过。业务 passed / failed 由 run 结束后的 Agent 解释和确认策略决定。
 - 图层不支持并行节点、join、reducer 或 graph-level parallel branch。多设备仍由 `ValidationInstance` 层支持；graph 是线性的 step 编排，每个 step 通过 `scope` 声明作用于某个 instance、全部 instance 或 run 级聚合。
 
 ### 2.6 Run 聚合与结果解释
@@ -1000,7 +1062,7 @@ LangGraph 只适合承载 step 编排层，不适合替代 step 内部 ReAct。�
 - 不支持 inline expression、复杂 state 表达、动态 reducer、运行时闭包或任意 TypeScript 代码。
 - 不支持 graph-level parallel branch、join、reducer 或多分支并行调度。
 - 多设备能力仍由 `ValidationInstance` 层表达，step graph 只按线性 step 编排推进。
-- step 是否通过仍由 Runtime 独立验证 `verificationRules`，graph transition 只能消费 Runtime 写入的 step 退出态和受控事件。
+- Runtime 不判断 step 业务语义是否通过，graph transition 只能消费 Runtime 写入的证据退出态和受控事件。
 - graph 执行状态必须落入 SQLite checkpoint，不能只依赖图引擎自己的内存或 checkpoint 机制。
 
 ### 3.3 收益
@@ -1009,7 +1071,7 @@ LangGraph 的主要收益在于工程实现，而不是扩大 schema 表达力�
 
 - 可以复用成熟的图执行框架来承载 step 间转移、循环边和终止态。
 - 可以把 step graph 的执行记录、节点状态和边触发过程组织成更清晰的 runtime trace。
-- 可以让 `step_completed / step_failed / step_blocked / manual_rejected` 等转移路径在执行层更直接可见。
+- 可以让 `step_evidence_collected / step_evidence_insufficient / step_blocked / manual_rejected` 等转移路径在执行层更直接可见。
 - 可以降低 AppPilot 自研 graph executor 的初始工作量。
 - 如果后续需要更复杂的调度能力，可以先在实现层实验，而不污染 AppPilot 的 schema 契约。
 
@@ -1349,17 +1411,19 @@ function buildRuntimePlanPrompt(
   return [
     "你是 AppPilot 的 Runtime Plan Builder。",
     "你必须先遵循 <plan_build_skill> 中的规则，再把 ValidatorAsset 和 run options 编译成具体 RuntimeExecutionPlan。",
-    "输出必须是一个 JSON object，且必须符合提供的 RuntimeExecutionPlan schema。",
+    "输出必须是一个 JSON object，且必须符合提供的 PlanBuildOutput schema。",
     "不要输出 Markdown，不要解释过程，不要写外部资产，不要生成 ValidationWritebackPackage。",
     "RuntimeExecutionPlan 是 AppPilot 内部执行计划，不属于外部 ValidatorAsset 契约。",
     "一个 run 只表达一个验证场景；多个 targetInstances 只表示同一场景下的多设备或 Editor 执行。",
     "必须输出受约束的 RuntimeStepGraphDefinition 静态 JSON：节点只能引用 RuntimeExecutionStep，边只能由前 step 退出态和可选受控事件类型组成。",
     "不得输出运行时代码、inline expression、复杂 state 表达或 LLM 自由生成的 edge condition。",
     "图层不支持并行节点、join、reducer 或 graph-level parallel branch；多设备通过 ValidationInstance 和 step scope 表达。",
-    "graph 只决定 step 间转移，不决定 step 是否通过；step 是否通过必须由 Runtime 验证 verificationRules。",
+    "graph 只决定 step 间转移，不决定业务语义是否通过；Runtime 只校验证据是否可信采集到。",
     "Run Event Bus 只表达 step 级、系统级、timer / observation window、外部输入和人工确认事件；App WebSocket、日志 watcher、UI 观测和截图默认编译为证据采集或 ReAct observation。",
     "iOS UI 控制必须使用 WDA，Android UI 控制必须使用 uiautomator2。",
-    "证据要求必须规范化为 EvidenceRequirement，并绑定到 plan 或 step 的 expectedEvidence。",
+    "证据要求必须规范化为 EvidenceRequirement，selector 必须使用类型化 EvidenceSelector。",
+    "每个 ReAct step 必须包含 intent、instanceSelector、evidenceRequirements、interpretationHints 和 blockWhen。",
+    "如果 semanticGoal 有多种合理解释，不得选择其中一种继续编译，必须输出 uncertainties 并降低 confidence。",
     "可缓存 plan 不得包含 run 内事件序号、timer 状态、checkpoint 状态、graph transition 中间态或 artifact 实例引用。",
     "<plan_build_skill>",
     skill.instructions,
@@ -1484,11 +1548,417 @@ async function buildRuntimeExecutionPlanWithCodex(
 }
 ```
 
+Plan-build skill 是语义层和执行层之间的唯一桥梁。它的职责不是生成传统自动化测试 assert，而是把 `ValidatorAsset` 的语义目标编译成可执行的观察计划：验证触点、触发步骤、证据要求、解释指引和不确定点。
+
+Plan-build skill 输出必须是结构化 `PlanBuildOutput`。`stepGraph` 用于执行，`semanticInterpretation`、`verificationTouchpoints`、`confidence` 和 `uncertainties` 用于审计和人工 review。
+
+```ts
+type VerificationCausalChain = {
+  // 触发该触点的动作
+  triggerAction: string;
+  // 预期状态变化
+  expectedStateChange: string;
+  // 该状态变化在哪些 evidence channel 可观测
+  observableThrough: EvidenceChannel[];
+  // 为什么这些证据能支撑该语义触点
+  supportReason: string;
+};
+
+type VerificationTouchpoint = {
+  // 语义触点，例如“设备 B 能看到设备 A 的写操作”
+  touchpoint: string;
+  // 该触点覆盖的语义解释；语义有歧义时保留全部候选解释
+  semanticMeaning: string;
+  // 该触点由哪些 step 覆盖
+  coveredBySteps: string[];
+  // 证据通道
+  evidenceChannels: EvidenceChannel[];
+  // 因果链
+  causalChain: VerificationCausalChain;
+  // 直接证据、间接证据或佐证证据
+  evidenceType: "direct" | "indirect" | "corroborating";
+};
+
+type PlanBuildOutput = {
+  // 编译出的内部 RuntimeExecutionPlan
+  runtimeExecutionPlan: RuntimeExecutionPlan;
+  // Agent 对语义目标的理解摘要，供审计和人工 review
+  semanticInterpretation: string;
+  // 识别出的验证触点列表，人工不用读完整 graph 也能 review 覆盖是否正确
+  verificationTouchpoints: VerificationTouchpoint[];
+  // 编译置信度；必须符合置信度校准规则
+  confidence: number;
+  // 不确定点；confidence < 0.5 或语义有歧义时必填
+  uncertainties?: string[];
+  // 人工 review 检查项
+  reviewChecklist?: Array<{
+    question: string;
+    relatedTouchpoint: string;
+    evidenceRefsExpected: string[];
+  }>;
+};
+```
+
+Plan-build skill 必须遵守以下约束：
+
+- 只能使用 `runtimeContext.authorizedTools` 中声明的工具，不能编造工具。
+- 只能使用 `runtimeContext.evidenceChannels` 中声明的证据通道，不能编造信号。
+- 每个 ReAct step 必须有单一明确的 `intent`、`instanceSelector`、至少一个 `required` evidence requirement、类型化 `EvidenceSelector`、`interpretationHints` 和 `blockWhen`。
+- `intent` 表达 step 要达成什么；`actions` 只是建议工具序列，Agent 执行时可以调整，但不能偏离 `intent`。
+- `interpretationHints` 必须使用 `InterpretationHint` 结构，并区分 `direct`、`indirect` 和 `corroborating` 证据。
+- 每个验证触点必须有因果链：触发动作、预期状态变化、可观测通道和支撑理由。
+- 如果证据只能间接支持语义结论，必须声明不可观测风险，不能把间接证据写成直接证明。
+- 如果缺少关键工具、关键 evidence channel 或 selector 无法具体化，必须写入 `uncertainties`，不得硬编 selector。
+- 有 L2 历史口径时，优先复用历史 touchpoints；新 plan 偏离历史模式时必须标记偏差并降低 confidence。
+- 如果 `semanticGoal` 可以有多种合理解释，必须输出全部候选 touchpoint 解释，`confidence` 自动降至 `< 0.5`，写入 `uncertainties: ["语义目标存在歧义，需要人工确认意图"]`，不得选择其中一种继续编译。
+
+置信度必须按以下规则校准：
+
+- `0.9+`：历史 L2 完全匹配，新 plan 与历史验证触点一致；这是复用，不是推断，`uncertainties` 应为空。
+- `0.8+`：工具齐全、触点直接、证据选择器具体，并且历史可复用但不是完全匹配。
+- `0.5-0.7`：存在间接证据、缺少一个关键 channel，或部分触点只能由 Agent 解释。
+- `<0.5`：目标不可观测、工具不足、关键 selector 无法具体化，或语义目标存在歧义；必须列出 `uncertainties`。
+
+Plan-build skill 的质量自检分为两类：
+
+- 结构性检查：所有工具来自 `authorizedTools`；所有 channel 来自 `EvidenceChannel`；每个 step 有 `instanceSelector`；每个 step 至少有一个 required evidence；每个 touchpoint 有因果链；每个 step 有 `blockWhen`；所有 selector 符合 `EvidenceSelector` 类型；graph 有合法终态路径且没有孤立节点。
+- 语义性检查：`semanticGoal` 的所有关键行为都有 touchpoint 覆盖；直接/间接证据已区分；不可观测风险已声明；历史 L2 偏差已标记；置信度有校准依据；歧义已标记为 uncertainty。
+
+约束对照总结如下：
+
+| # | 约束 | 落点 |
+|---|---|---|
+| 1 | 只能使用授权工具，不能编造工具 | `runtimeContext.authorizedTools`、结构性检查、禁止事项 |
+| 2 | 只能使用已知证据通道，不能编造信号 | `runtimeContext.evidenceChannels`、结构性检查、禁止事项 |
+| 3 | 每个 step 必须有单一明确的 `intent` | 步骤颗粒度控制、结构性检查 |
+| 4 | 每个 step 必须有 `instanceSelector` | 步骤颗粒度控制、结构性检查 |
+| 5 | 每个 step 至少有一个 required `EvidenceRequirement` | 步骤颗粒度控制、证据要求、结构性检查 |
+| 6 | 每个 evidence selector 必须类型化为 `EvidenceSelector` | 证据要求、结构性检查、禁止事项 |
+| 7 | 每个 step 必须有 `blockWhen`，采集不到可信证据时进入 blocked/insufficient | 步骤颗粒度控制、核心原则、结构性检查 |
+| 8 | `actions` 只是建议工具序列，Agent 可调整但不能偏离 `intent` | actions 粒度规则 |
+| 9 | `interpretationHints` 必须结构化，并区分 direct / indirect / corroborating | 解释指引规则、语义性检查 |
+| 10 | 每个验证触点必须有因果链 | 验证触点规则、结构性检查 |
+| 11 | 间接证据必须声明不可观测风险，不能写成直接证明 | 解释指引规则、语义性检查、禁止事项 |
+| 12 | L2 历史口径优先复用，偏离历史必须标记 | 历史 L2 规则、语义性检查 |
+| 13 | L2 完全匹配时 `confidence` 可为 `0.9+`，且 `uncertainties` 应为空 | 历史 L2 规则、置信度校准 |
+| 14 | 语义目标有歧义时必须降置信度并阻断编译，不能任选一种继续 | 语义歧义规则、语义性检查、禁止事项 |
+
+#### ValidatorAsset Plan Build Skill 原文
+
+下面文本是 plan-build Skill 的原文模板。它可以直接落到独立 `SKILL.md` 中，也可以作为 Codex Agent SDK session 的 plan-build system instruction。
+
+````markdown
+# ValidatorAsset Plan Build Skill
+
+## 你的职责
+
+你负责把 `ValidatorAsset` 的语义目标编译成可执行的 `RuntimeExecutionPlan`。
+
+这个 Skill 是语义层和执行层之间的桥梁：
+
+```text
+ValidatorAsset（语义层）
+        ↓
+ValidatorAsset Plan Build Skill
+        ↓
+RuntimeExecutionPlan（执行层）
+```
+
+你的目标不是生成传统自动化测试 assert，而是生成一个可执行的观察计划：
+
+- 识别验证触点
+- 设计触发步骤
+- 规定证据采集要求
+- 给出 Agent 解释指引
+- 标记不确定点和人工 review 入口
+
+输出必须是符合 `PlanBuildOutput` schema 的 JSON。
+
+不要输出解释。
+不要输出 Markdown。
+不要输出代码块。
+不要输出 schema 之外的字段。
+
+## 输入
+
+你会收到一个 `ContextBundle`，其中可能包含：
+
+- `ValidatorAsset.semanticGoal`
+- `ValidatorAsset.executionSteps`
+- `ValidatorAsset.bdd_refs`
+- L1 资产：架构约束、业务边界、不可违反的工程约束
+- L2 资产：历史验证口径、历史证据模式、已人工确认记录
+- `runtimeContext.authorizedTools`
+- `runtimeContext.evidenceChannels`
+- 目标平台、目标设备、App 版本、SDK 版本、环境配置
+
+`ValidatorAsset.executionSteps` 只是声明式参考，不等于最终 Runtime step graph。
+如果它和 `semanticGoal` 或 L1/L2 约束冲突，必须在 `uncertainties` 中说明。
+
+## 输出
+
+输出必须符合以下结构：
+
+```ts
+type PlanBuildOutput = {
+  runtimeExecutionPlan: RuntimeExecutionPlan;
+  semanticInterpretation: string;
+  verificationTouchpoints: VerificationTouchpoint[];
+  confidence: number;
+  uncertainties?: string[];
+  reviewChecklist?: Array<{
+    question: string;
+    relatedTouchpoint: string;
+    evidenceRefsExpected: string[];
+  }>;
+};
+```
+
+其中：
+
+- `runtimeExecutionPlan`：编译出的执行计划
+- `semanticInterpretation`：你对语义目标的理解摘要，供审计和人工 review
+- `verificationTouchpoints`：识别出的验证触点列表，供人工快速判断 plan 是否覆盖真正目标
+- `confidence`：编译置信度，必须符合置信度校准规则
+- `uncertainties`：不确定点；低置信度或语义歧义时必填
+- `reviewChecklist`：人工 review 时应该确认的问题
+
+## 核心原则
+
+Runtime 执行阶段只负责动作执行和可信证据采集。
+
+Runtime 不在每个 step 内做语义 pass/fail 判断。
+Runtime 不把自然语言目标转换成固定化程序 assert。
+Runtime 只判断证据是否可信采集到。
+
+语义判断发生在执行结束后：
+
+1. Agent 读取所有证据。
+2. Agent 生成解释。
+3. 人工确认或 confirmation policy 判断是否允许自动接受。
+4. 通过后才允许生成可写回材料。
+
+如果某个 step 采集不到可信证据，必须进入 `step_blocked` 或 `step_evidence_insufficient`。
+不得伪造 evidence。
+不得用 Agent 自评替代 required evidence。
+
+## 拆解规则
+
+### 规则一：识别验证触点
+
+从 `semanticGoal` 中识别：
+
+- 什么状态变化是成功语义的证明？
+- 这个状态变化在哪个 evidence channel 可以观测到？
+- 该触点是直接证据、间接证据还是佐证证据？
+- 该触点是否需要多个信号组合才能成立？
+
+每个验证触点必须有因果链：
+
+- 触发动作
+- 预期状态变化
+- 可观测通道
+- 为什么这些证据能支撑该语义触点
+
+禁止只写“验证账号功能”“检查是否成功”这类模糊触点。
+
+### 规则二：识别触发路径
+
+从 `semanticGoal`、`executionSteps`、BDD 场景和 L1/L2 资产中识别：
+
+- 需要什么前置条件？
+- 触发行为需要哪些操作步骤？
+- 操作步骤的顺序是否关键？
+- 是否涉及多设备、多账号、多平台或跨服务端同步？
+
+触发路径必须能完整触发 `semanticGoal` 描述的行为。
+不能生成和目标无关的孤立步骤。
+
+### 规则三：步骤颗粒度控制
+
+每个 ReAct step 必须：
+
+- 有单一明确的 `intent`
+- 有明确的 `instanceSelector`
+- 有建议性的 `actions`
+- 有 `evidencePlan`
+- 至少有一个 `required` evidence requirement
+- 有 `blockWhen` 条件
+
+`intent` 表达这个 step 要达成什么。
+`actions` 表达建议调用的工具序列。
+
+Agent 执行时可以调整 `actions`，但不能偏离 `intent`。
+
+禁止：
+
+- 一个 step 包含多个验证触点
+- 一个 step 同时做多个无关操作
+- 一个 step 的 intent 是模糊目标
+- 把语义 pass/fail 写进 Runtime step
+
+### 规则四：证据要求必须具体
+
+每个 `EvidenceRequirement` 必须指定：
+
+- `channel`
+- 类型化 `selector`
+- `required`
+- `purpose`
+- `instanceSelector`
+
+`selector` 必须符合 `EvidenceSelector` 类型。
+
+禁止：
+
+- selector 是自然语言描述
+- required 关键证据没有标记 `required: true`
+- 使用未声明的 evidence channel
+- 编造工具或编造信号
+
+如果 selector 无法具体化，必须写入 `uncertainties`。
+不能硬编 selector。
+
+### 规则五：步骤间依赖必须显式
+
+如果 step B 依赖 step A 的结果：
+
+- step A 必须在 step B 之前
+- step A 的 expected evidence 必须包含 step B 需要的输入信息
+- graph edge 必须表达依赖关系
+
+如果依赖信息采集不到，step B 不得继续执行。
+
+### 规则六：解释指引必须结构化
+
+每个关键 evidence requirement 应该包含 `interpretationHints`。
+
+`interpretationHints` 必须使用以下语义：
+
+- `direct`：直接证明该触点
+- `indirect`：间接支持该触点，但不能单独证明
+- `corroborating`：作为佐证信号
+
+如果证据只能间接支持语义结论，必须声明不可观测风险。
+
+示例：
+
+```text
+sync_status = completed 可以说明服务端同步流程完成，
+但不能单独证明客户端 UI 已经刷新。
+```
+
+### 规则七：历史 L2 必须优先复用
+
+如果存在 L2 历史验证口径：
+
+- 优先复用历史 touchpoints
+- 优先复用历史 evidence pattern
+- 优先复用历史 interpretation hints
+
+如果新 plan 偏离历史模式：
+
+- 必须在 `uncertainties` 中说明偏差
+- 必须降低 `confidence`
+- 必须把偏差放入 `reviewChecklist`
+
+如果历史 L2 完全匹配，新 plan 和历史触点一致：
+
+- `confidence` 应为 `0.9+`
+- 这是复用，不是推断
+- `uncertainties` 应为空
+
+### 规则八：语义歧义必须阻断编译
+
+如果 `semanticGoal` 可以有多种合理解释，必须：
+
+- 输出所有候选 touchpoint 解释
+- `confidence` 自动降至 `< 0.5`
+- 写入 `uncertainties: ["语义目标存在歧义，需要人工确认意图"]`
+- 不得选择其中一种解释继续编译
+
+示例：
+
+```text
+“账号互通”可能表示：
+A. token 共享或登录状态互通
+B. 用户数据同步
+
+两者的验证触点和证据不同，必须人工确认意图。
+```
+
+## 置信度校准
+
+必须按以下规则设置 `confidence`：
+
+- `0.9+`：历史 L2 完全匹配，新 plan 与历史验证触点一致；这是复用，不是推断，`uncertainties` 应为空。
+- `0.8+`：工具齐全、触点直接、证据选择器具体，并且历史可复用但不是完全匹配。
+- `0.5-0.7`：存在间接证据、缺少一个关键 channel，或部分触点只能由 Agent 解释。
+- `<0.5`：目标不可观测、工具不足、关键 selector 无法具体化，或语义目标存在歧义；必须列出 `uncertainties`。
+
+不得给不可观测目标高置信度。
+不得因为步骤看起来完整就提高置信度。
+置信度必须来自工具、证据、历史和语义清晰度。
+
+## 重新人工确认门禁
+
+Plan-build Skill 不直接决定本次 run 是否最终通过。
+是否需要人工确认由 confirmation policy 计算。
+
+但如果你在 plan build 时发现以下风险，必须把它们写入 `uncertainties` 或 `reviewChecklist`：
+
+- App 版本变化可能影响历史证据模式
+- SDK 版本变化可能影响历史证据模式
+- 新 plan 的 touchpoint 和 L2 历史不一致
+- 证据模式可能漂移
+- Agent 解释口径和历史不同
+- 关键证据缺失，需要人工复查
+
+这些风险会被 Runtime 或 confirmation policy 映射为 `ReconfirmationTrigger`。
+
+## 质量自检
+
+输出前必须完成结构性自检：
+
+- 所有工具来自 `authorizedTools`
+- 所有 channel 来自已知 `EvidenceChannel`
+- 每个 step 有 `intent`
+- 每个 step 有 `instanceSelector`
+- 每个 step 有 `blockWhen`
+- 每个 step 至少有一个 required `EvidenceRequirement`
+- 每个 touchpoint 有因果链
+- 所有 selector 符合 `EvidenceSelector` 类型
+- graph 有合法终态路径
+- 没有孤立节点
+
+输出前必须完成语义性自检：
+
+- `semanticGoal` 的所有关键行为都有 touchpoint 覆盖
+- 直接证据、间接证据、佐证证据已经区分
+- 不可观测风险已经声明
+- L2 历史偏差已经标记
+- 置信度有校准依据
+- 语义歧义已经标记为 uncertainty
+- 每个 reviewChecklist 问题都能关联到 touchpoint 或 evidence requirement
+
+## 禁止事项
+
+禁止输出自然语言解释。
+禁止输出 Markdown。
+禁止编造工具。
+禁止编造 evidence channel。
+禁止编造 selector。
+禁止用 Agent 自评替代 required evidence。
+禁止把传统 pass/fail assert 写进 Runtime step。
+禁止在语义目标有歧义时选择其中一种继续编译。
+禁止把间接证据描述为直接证明。
+````
+
 ### 4.4 Agent 响应模式
 
 Agent 在 run 内响应三类事件：
 
-- 进度事件：理解 step 级进展，例如 `step_started`、`step_completed` 或 `step_blocked`，并给出下一步建议；原子动作不通过 Event Bus 驱动。
+- 进度事件：理解 step 级进展，例如 `step_started`、`step_evidence_collected`、`step_evidence_insufficient` 或 `step_blocked`，并给出下一步建议；原子动作不通过 Event Bus 驱动。
 - 心跳事件：检查 ReAct 循环是否长时间没有新迭代、step 预算和 run 预算是否接近耗尽。
 - 异常事件：对 step 级失败、工具系统性不可用、Runtime 状态不一致或 run 级预算耗尽做恢复决策。
 
@@ -1746,29 +2216,29 @@ type AgentHumanPrompt = {
 
 ### 5.1 执行层边界
 
-ReAct 执行层负责执行 `RuntimeExecutionStep.kind: "react_task"` 的步骤。每个 ReAct step 都是一个任务目标，Agent 在 Runtime 授权的原子工具内执行 `Reasoning -> Acting -> Observing` 循环，直到 Runtime 独立验证 `successCriteria.verificationRules` 通过，或达到退出态。
+ReAct 执行层负责执行 `RuntimeExecutionStep.kind: "react_task"` 的步骤。每个 ReAct step 都是一个任务目标，Agent 在 Runtime 授权的原子工具内执行 `Reasoning -> Acting -> Observing` 循环，自主决定动作和调整策略，直到提交当前 step 的证据、主动声明 blocked，或达到预算 / 超时退出态。
 
 ReAct 内部 observation 不写入 Run Event Bus。找不到按钮、坐标不准、工具返回空、单次工具调用错误、verification feedback 都只是 ReAct 循环的 observation，由 Agent 在下一轮继续调整策略。
 
-Run Event Bus 只承载 step 级、系统级和外部输入级事件。ReAct step 失败、超时、被阻塞或通过 Runtime 验证时，Runtime 才发布 step 级事件。
+Run Event Bus 只承载 step 级、系统级和外部输入级事件。ReAct step 超时、被阻塞、证据不足或证据可信采集完成时，Runtime 才发布 step 级事件。
 
 每一轮 ReAct 迭代必须持久化为 `ReactIterationRecord`，写入 run 目录的 `agent/` 目录，并把产生的 artifact 同步登记到 Evidence Store。默认只保存 `reasoningSummary`，不要求保存完整内部思维链；`fullReasoningRef` 仅在策略允许且 SDK 可提供时写入。
 
-step 是否完成只由 Runtime 重新采证并验证 `verificationRules` 决定。Agent 自评、自然语言声明或 `successCriteria.intentDescription` 都不能作为通过结论。
+Runtime 不在 step 执行阶段判断业务语义 passed / failed。Runtime 只校验当前 step 是否按 `evidencePlan.evidenceRequirements` 产出了可信证据：artifact 已落盘、Evidence Store 已登记、hash / timestamp / source / instanceId 合法、selector 与 channel 类型匹配、Agent 解释引用的 evidence refs 真实存在。采集不到可信信息时，step 进入 `step_blocked` 或 `step_evidence_insufficient`，不能伪造 `passed`。
 
 ### 5.2 执行流程
 
 ```text
 RuntimeExecutionStep(kind: react_task)
-  -> 初始化 ReAct 循环：intent + successCriteria.intentDescription + availableTools + budget
+  -> 初始化 ReAct 循环：intent + actions hint + evidenceRequirements + interpretationHints + availableTools + budget
   -> Agent 执行 reasoningSummary / action / observation
   -> 每轮写入 ReactIterationRecord
-  -> Agent 认为已完成或 Runtime 到达检查点
-  -> Runtime 独立采集证据并验证 verificationRules
-       -> 通过：发布 step_completed
-       -> 不通过：生成 VerificationFeedback，作为下一轮 observation
-       -> 无法判定：根据 unknownRules 决定继续、blocked 或诊断记录
-  -> 循环直到 runtime_verified、max_iterations、timeout 或 agent_blocked
+  -> Agent 提交 step evidence 或声明 blocked
+  -> Runtime 校验证据可信度和 Evidence Store 登记状态
+       -> required evidence 可信采集：发布 step_evidence_collected
+       -> evidence 不足但仍可继续：生成 EvidenceFeedback，作为下一轮 observation
+       -> evidence channel / tool / 前提不可用：发布 step_blocked
+  -> 循环直到 evidence_collected、evidence_insufficient、max_iterations、timeout 或 agent_blocked
 ```
 
 普通工具失败不是异常。只有 ReAct 预算耗尽、step 超时、Agent 主动声明 blocked、工具系统性不可用或 Runtime 状态不一致，才进入 step 级失败、blocked 或异常路径。
@@ -1797,7 +2267,7 @@ type ReactIterationRecord = {
   // 工具输入
   actionInput: unknown;
   // observation 来源
-  observationSource: "tool_call" | "verification_feedback";
+  observationSource: "tool_call" | "evidence_feedback";
   // 给下一轮 Agent 看的简要 observation 文本
   observation: string;
   // 大体积或结构化 observation 引用
@@ -1811,8 +2281,8 @@ type ReactIterationRecord = {
     // 工具错误描述
     message: string;
   };
-  // Runtime 验证反馈；observationSource 为 verification_feedback 时填写
-  verificationFeedback?: VerificationFeedback;
+  // Runtime 证据反馈；observationSource 为 evidence_feedback 时填写
+  evidenceFeedback?: EvidenceFeedback;
   // 迭代开始时间
   startedAt: string;
   // 迭代结束时间
@@ -1822,51 +2292,41 @@ type ReactIterationRecord = {
 };
 ```
 
-### 5.4 验证反馈 Schema
+### 5.4 证据反馈 Schema
 
 ```ts
-// Runtime 验证 successCriteria 的反馈
-type VerificationFeedback = {
-  // 验证尝试 ID，同一 step 内多次验证可追溯
-  verificationAttemptId: string;
-  // 验证执行时间
+// Runtime 校验 step evidence 可信度的反馈
+type EvidenceFeedback = {
+  // 证据校验尝试 ID，同一 step 内多次校验可追溯
+  evidenceCheckId: string;
+  // 校验执行时间
   performedAt: string;
-  // 通过的规则 ID 列表
-  passedRules: string[];
-  // 未通过的规则列表
-  failedRules: Array<{
-    // 规则 ID
-    ruleId: string;
-    // 期望描述
-    expected: string;
-    // 实际采集到的描述
-    actual: string;
-    // 采集到的原始证据引用
-    evidenceRef?: string;
-  }>;
-  // 因采证失败而无法判定的规则列表
-  unknownRules?: Array<{
-    // 规则 ID
-    ruleId: string;
-    // 采证失败原因
-    reason: string;
-    // 采证错误码
-    errorCode?: string;
-  }>;
+  // 已满足的 required evidence requirement
+  collectedRequirementIds: string[];
+  // 缺失或不可信的 required evidence requirement
+  missingRequirementIds: string[];
+  // 证据引用是否合法
+  evidenceRefsValid: boolean;
+  // 证据不足原因
+  reasons?: string[];
+  // 采集到的证据引用
+  evidenceRefs?: string[];
 };
 ```
 
-`unknownRules` 包含 required 规则时，step 不能进入 `step_completed`。Runtime 应把 `VerificationFeedback` 回喂给 ReAct 循环，Agent 可以继续尝试、换策略或通过 `internal.react.declare_blocked` 声明 blocked。仅 context 规则 unknown 时，不阻断 step completed，但必须记录到诊断信号或审计材料中。
+`missingRequirementIds` 非空时，step 不能进入 `step_evidence_collected`。Runtime 应把 `EvidenceFeedback` 回喂给 ReAct 循环，Agent 可以继续尝试、换策略或通过 `internal.react.declare_blocked` 声明 blocked。Runtime 不根据 evidence 内容解释业务语义，只根据 evidence 可信度决定是否允许进入 run 级 Agent interpretation。
 
-verification feedback 默认作为一轮 ReAct observation 计入 `maxIterations`，避免把 Runtime 验证当成免费探测工具。`ReactPolicy.countVerificationAsIteration` 控制这条规则的开关，默认必须为 `true`；如果策略上选择关闭，Runtime 必须在 plan 编译诊断中声明替代的预算保护机制，否则编译失败。
+evidence feedback 默认作为一轮 ReAct observation 计入 `maxIterations`，避免把 Runtime 证据校验当成免费探测工具。`ReactPolicy.countEvidenceFeedbackAsIteration` 控制这条规则的开关，默认必须为 `true`；如果策略上选择关闭，Runtime 必须在 plan 编译诊断中声明替代的预算保护机制，否则编译失败。
 
 ### 5.5 Step 退出态
 
 ```ts
 // ReAct 任务退出原因
 type StepReactExitReason =
-  // Runtime 独立验证通过
-  | "runtime_verified"
+  // required evidence 已可信采集
+  | "evidence_collected"
+  // evidence 不足，无法进入语义解释
+  | "evidence_insufficient"
   // ReAct 预算耗尽
   | "max_iterations"
   // step 超时
@@ -1880,7 +2340,7 @@ type AgentBlockedReason =
   | "app_crashed"
   // 目标 UI 元素被隐藏或不存在
   | "ui_unreachable"
-  // 授权工具集不足以完成 successCriteria
+  // 授权工具集不足以完成 evidence requirements
   | "tool_missing"
   // ValidatorAsset 描述的前提条件未达成
   | "precondition_failed"
@@ -1923,7 +2383,7 @@ Run Event Bus 中的事件分为三类：
 - Event Bus：写入、排序、持久化、读取事件。
 - Scheduler：把 timer、观察窗口和心跳条件变成事件。
 - Watcher / Hook：把外部输入、设备生命周期、App 安装状态和人工确认变成事件；日志与 App WebSocket 默认写入证据或 ReAct observation。
-- Step Dispatcher：根据 `RuntimeExecutionPlan`、ReAct 退出态和 Runtime 验证结果推进 step。
+- Step Dispatcher：根据 `RuntimeExecutionPlan`、ReAct 退出态和 Runtime 证据校验结果推进 step。
 - Agent：对进度、心跳、异常事件做策略响应。
 
 ### 6.2 事件 Schema
@@ -1973,10 +2433,10 @@ type ExceptionEventAction =
 type ValidationEventType =
   // step 已开始
   | "step_started"
-  // step 已完成；Runtime 验证 successCriteria 通过
-  | "step_completed"
-  // step 失败；通常由预算耗尽或超时触发
-  | "step_failed"
+  // step 执行完成，required evidence 已可信采集
+  | "step_evidence_collected"
+  // step 执行完成，但 required evidence 不足
+  | "step_evidence_insufficient"
   // step 卡住；心跳检测到 ReAct 循环无进展
   | "step_stalled"
   // step 被阻塞；Agent 主动声明前提不成立或无法继续
@@ -2122,7 +2582,7 @@ type ExceptionEventPayload = {
 ### 6.3 事件生成和消费规则
 
 - Run Event Bus 只记录 run 内事实，接收范围限于 step 级、系统级、timer / observation window、外部输入和人工确认事件。日志命中、App WebSocket 消息、UI tree、截图、工具结果和普通策略调整默认写入 evidence artifact 或 `ReactIterationRecord`，不写入 Run Event Bus。
-- step 状态事件只能由 Runtime 写入。`step_completed` 必须来自 Runtime 对 `successCriteria.verificationRules` 的独立验证；`step_failed` 来自预算耗尽、step 超时或连续 verification 失败；`step_blocked` 来自 `internal.react.declare_blocked` 或 Runtime 确认前提不成立。Agent 自评不能触发 step 状态变化。
+- step 状态事件只能由 Runtime 写入。`step_evidence_collected` 必须来自 Runtime 对 required evidence 的可信度校验；`step_evidence_insufficient` 来自证据缺失或不可信；`step_blocked` 来自 `internal.react.declare_blocked`、Runtime 确认前提不成立或关键证据通道不可用。Agent 自评不能触发 step 状态变化。
 - 系统事件只表达系统级事实。`tool_system_unavailable` 表达 WDA、uiautomator2、App WebSocket bridge 或关键构建工具等系统性不可用；单次工具调用错误仍属于 ReAct observation。`runtime_state_inconsistent` 表达 checkpoint、SQLite、artifact 索引或 run 状态不一致。
 - timer 和观察窗口由 Scheduler 写入 `timer_fired`、`observe_window_started` 和 `observe_window_finished`；观察窗口事件 payload 必须包含 `windowId`，并尽量携带 `instanceId` 和 `stepId`。这些事件是否触发 step 转移由 Runtime 根据当前 step 状态和 Runtime Step Graph 决定。
 - 外部输入只能通过 `external.event.emit` 写入 `external_event_received`，不直接修改 step、timer、checkpoint 或验证结果。人工确认事件只记录确认事实，是否推进写回或下一 step 仍由 Runtime 决定。
@@ -2137,7 +2597,7 @@ Timer 与 Scheduler 是 run 内部机制。它们用于延迟检查、跨小时�
 
 `RuntimeExecutionPlan` 确定后，AppPilot 初始化 Internal Scheduler。scheduler 负责把 timer 到期、观察窗口和心跳条件转换为 run 内事件；runtime tick 只驱动内部轮询和健康检查，不转换为 run 内事件。
 
-Scheduler 只把 timer 到期、心跳条件和观察窗口边界转换为事件，并更新本地调度状态。是否推进 step 由 Runtime 根据当前 step 状态、ReAct 退出态和 Runtime 验证结果决定。
+Scheduler 只把 timer 到期、心跳条件和观察窗口边界转换为事件，并更新本地调度状态。是否推进 step 由 Runtime 根据当前 step 状态、ReAct 退出态和 Runtime 证据校验结果决定。
 
 ### 7.2 Timer Schema
 
@@ -2356,7 +2816,7 @@ type ValidationTask = {
 - 已确认的 `ExecutionFact` 不做原地覆盖。
 - 验证需求或验证流程变化时，调用方必须启动新的 run。
 - 检查点、任务状态和事件索引必须先写入本地状态数据库，再暴露给 `validation_status` 和恢复调度。
-- 引入 Runtime Step Graph 后，恢复边界必须覆盖 graph transition 中间态。`step_completed`、edge 触发和下一 step 启动之间必须以事务方式记录 `currentGraphNodeId`、`lastTriggeredEdgeId` 和 `pendingTransitionEventIds`，避免进程中断后丢失已触发但未完成的转移。
+- 引入 Runtime Step Graph 后，恢复边界必须覆盖 graph transition 中间态。`step_evidence_collected`、edge 触发和下一 step 启动之间必须以事务方式记录 `currentGraphNodeId`、`lastTriggeredEdgeId` 和 `pendingTransitionEventIds`，避免进程中断后丢失已触发但未完成的转移。
 - scheduler 到期必须以事务方式同时更新 timer 状态并写入 `timer_fired` 事件；被唤醒 step 和状态推进由 Runtime 事件处理记录表达。
 - 外部输入事件必须支持 `idempotencyKey` 去重，避免 hook 重放导致重复推进。
 - Runtime 处理 step 级或系统级事件后必须写入 `DbEventProcessingRecord`；恢复时以该记录判断事件处理是否已经执行。
@@ -4304,13 +4764,13 @@ type ReactPolicy = {
   defaultMaxIterations: number;
   // 单次 observation 默认最大等待时间
   defaultObservationTimeoutMs: number;
-  // verification 失败回喂是否作为一轮迭代消耗 maxIterations 预算；默认 true
+  // evidence feedback 回喂是否作为一轮迭代消耗 maxIterations 预算；默认 true
   // 设为 false 时 Runtime 必须在文档说明中显式声明替代的预算保护机制
-  countVerificationAsIteration: boolean;
+  countEvidenceFeedbackAsIteration: boolean;
   // 是否持久化完整推理过程；默认 false，仅在 debug 或合规审计需要时打开
   persistFullReasoning: boolean;
-  // 同一 step 内连续 verification 全失败次数上限；超过即提前转 step_failed
-  maxConsecutiveFailedVerifications?: number;
+  // 同一 step 内连续 evidence check 全失败次数上限；超过即提前转 step_evidence_insufficient
+  maxConsecutiveFailedEvidenceChecks?: number;
 };
 
 // Event Bus backpressure 策略
@@ -4359,7 +4819,7 @@ type RuntimeSafetyPolicy = {
 ### 15.2 执行与写回安全
 
 - AppPilot 只产出可供外部系统消费的材料，不直接写外部 consumption snapshot、published index 或资产治理状态。
-- 缺少人工确认时不得产出 `ValidationWritebackPackage`。Agent review 不能替代人工确认，写回候选也必须转换为明确的外部资产字段后再进入确认流程。
+- 缺少 required human confirmation 或 auto-acceptance 记录时不得产出 `ValidationWritebackPackage`。Agent review 不能替代 bootstrap 阶段的人工确认；在更高 maturityLevel 下，Agent interpretation 只有满足确认策略和历史模式一致性门禁时才能生成 auto-acceptance 记录。
 - `RuntimeExecutionPlan`、`RuntimeExecutionStep` 和 `RuntimeStepGraphDefinition` 都是内部执行产物，不得原样写回为外部 `ValidatorAsset`。
 - SQLite 只保存任务状态、索引、checkpoint 和 artifact 引用；大体积 artifact 正文必须保存在 Evidence Store。阶段边界的任务状态、事件、checkpoint 和 artifact 引用必须在同一数据库事务中提交。
 - Agent 只能调用已授权的工具和参数；cancellation 只能阻止后续动作，不能删除已经写出的证据。
@@ -4370,7 +4830,11 @@ type RuntimeSafetyPolicy = {
 
 ### 15.3 人工确认边界
 
-人工确认用于确认执行结果、证据范围、诊断解释和准备回流的材料。没有人工确认，AppPilot 不应把本次 run 的结果包装为可写回材料。
+人工确认用于确认执行结果、证据范围、诊断解释和准备回流的材料。人工确认不是每次 run 的固定门禁；是否需要人工确认由 validator 或 validation fact 的 `maturityLevel`、历史确认记录、证据模式一致性和重新确认触发器共同决定。
+
+首次执行和 `bootstrap` 阶段必须人工确认，用来校准 Agent 解释标准。进入 `candidate`、`validated` 和 `stable` 后，人工确认频率递减；只有触发重新确认门禁或证据/解释不稳定时才强制人工确认。
+
+没有 required human confirmation 或 auto-acceptance 记录时，AppPilot 不应把本次 run 的结果包装为可写回材料。auto-acceptance 不是 Agent 自评，它必须引用证据、历史模式匹配结果、maturityLevel 和确认策略计算结果。
 
 确认记录必须落到 run 目录和本地状态数据库，作为后续审计、恢复和导出的依据。人工确认只覆盖确认记录声明的范围，AppPilot 不得从窄范围 run 推断更大范围已验证。
 
@@ -4400,6 +4864,46 @@ type HumanConfirmationDecision =
   | "resolved"
   // 人工无法处理或需要升级处理，runtime 应停止或转入 blocked
   | "escalated";
+
+// Validator 或 validation fact 的成熟度等级
+type MaturityLevel =
+  // 首次或早期校准阶段；每次执行必须人工确认
+  | "bootstrap"
+  // 已有历史确认记录，但次数不够；按策略抽样确认
+  | "candidate"
+  // Agent 解释模式稳定；证据模式和历史一致时可自动接受
+  | "validated"
+  // 长期稳定；只在安全阀触发时重新人工确认
+  | "stable";
+
+// 触发重新人工确认的安全阀
+type ReconfirmationTrigger =
+  // App 版本变更
+  | "app_version_changed"
+  // SDK 版本变更
+  | "sdk_version_changed"
+  // 证据模式偏离历史
+  | "evidence_pattern_drift"
+  // 连续失败超过阈值
+  | "consecutive_failures"
+  // Agent 解释结论改变
+  | "agent_interpretation_changed"
+  // 人工主动标记需要复查
+  | "manual_flagged";
+
+// 本次 run 是否需要人工确认的策略计算结果
+type ConfirmationGateResult = {
+  // 当前成熟度
+  maturityLevel: MaturityLevel;
+  // 本次是否必须人工确认
+  required: boolean;
+  // 触发重新确认的原因
+  triggers: ReconfirmationTrigger[];
+  // 如果不需要人工确认，是否允许自动接受本次 Agent 解释
+  autoAcceptanceAllowed: boolean;
+  // 策略说明，必须可审计
+  reason: string;
+};
 
 // 人工确认覆盖范围
 type HumanConfirmationScope = {
@@ -4459,6 +4963,15 @@ type HumanConfirmationRecord = {
   artifactRef: string;
 };
 ```
+
+确认策略必须满足：
+
+- `bootstrap`：每次执行必须人工确认；Agent 解释只作为参考，人工做最终判断。
+- `candidate`：已有历史确认记录但次数不够；可以按抽样策略确认，例如每 3 次确认 1 次；Agent 解释和历史模式一致时可跳过非抽样 run。
+- `validated`：Agent 解释模式稳定；证据模式和历史一致时自动接受；出现任一 `ReconfirmationTrigger` 时强制人工确认。
+- `stable`：长期稳定且证据模式高度可预期；只在 App 版本变更、SDK 版本变更、历史通过率突然下降、证据模式漂移、Agent 解释变化或人工标记时触发人工确认。
+
+重新确认触发器是自动化机制的安全阀。任何 maturityLevel 下，只要 `ConfirmationGateResult.triggers` 非空并且策略要求重新确认，AppPilot 都必须生成人工确认提示；不能仅凭 Agent interpretation 自动写回。
 
 `external.confirmation.submit` 的 `result` 直接写入 `HumanConfirmationRecord.decision`。不同 `confirmationType` 允许的 `result` 取值固定如下：
 
@@ -4550,4 +5063,4 @@ type AppPilotError = {
 
 ### 17.2 重放要求
 
-给定同一个 run 目录，AppPilot 应能在不重新执行设备流程的情况下，基于 `ReactIterationRecord` 完整轨迹、Evidence Store、SQLite 事件记录和 artifact 索引，重放证据提取、Runtime 验证和写回材料包生成。
+给定同一个 run 目录，AppPilot 应能在不重新执行设备流程的情况下，基于 `ReactIterationRecord` 完整轨迹、Evidence Store、SQLite 事件记录和 artifact 索引，重放证据提取、Runtime 证据校验和写回材料包生成。
