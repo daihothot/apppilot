@@ -94,8 +94,6 @@ validator_id: validator:<domain>/<platform>/<scenario>
 asset_type: validator_asset
 # 验证流程身份，用于判定是否同一验证流程
 flow_identity:
-  # 规范化后的任务目标
-  normalized_task_goal:
   # 验证平台
   platform:
   # 场景消歧字段
@@ -108,7 +106,7 @@ flow_identity:
   identity_hash:
 # 验证语义目标；作为 plan compiler 的主要语义输入
 semantic_goal:
-# 验证要求；比 semantic_goal 更细的可观测约束，用于匹配 catalog/rule
+# 验证要求；字符串数组，比 semantic_goal 更细的可观测约束，用于匹配 catalog/rule
 requires:
   - <requirement>
 # 当前 Validator 验证的验证事实列表
@@ -563,25 +561,6 @@ type TargetSignatureInput = {
   editorRequired?: boolean;
 };
 
-// Plan compiler 的内部归一化输入；它由外部 ValidatorAsset 和 run options 提取生成。
-// 外部字段可以使用 snake_case；进入 compiler 后统一为 camelCase。
-type PlanCompilerInput = {
-  // 来自 ValidatorAsset.semantic_goal 或 flow_identity.normalized_task_goal
-  semanticGoal: string;
-  // 来自 ValidatorAsset.requires
-  requires: string[];
-  // 来自 flow_identity.validation_fact_ids 或 validates
-  validationFactIds: string[];
-  // 来自 ValidatorAsset.bdd_refs
-  bddRefs: string[];
-  // 目标平台；可以由 ValidatorAsset 或 run options 收敛
-  platform: Platform;
-  // 场景消歧字段
-  scenario?: string;
-  // 能力消歧字段
-  capability?: string;
-};
-
 // Evidence Catalog 记录一个可复用的语义触点到证据 selector 的映射。
 // 它是 AppPilot 内部编译输入，不是外部 ValidatorAsset 契约。
 type EvidenceCatalogEntry = {
@@ -599,7 +578,7 @@ type EvidenceCatalogEntry = {
   semanticAliases: string[];
   // 该 entry 覆盖的验证触点
   touchpoint: string;
-  // 关联验证事实 ID；用于 goal/requires 精准匹配
+  // 关联验证事实 ID；用于 ValidatorAsset.semantic_goal / requires 精准匹配
   validationFactIds?: string[];
   // 关联 BDD 场景 ID；用于从 bdd_refs 精准匹配
   bddRefs?: string[];
@@ -623,7 +602,7 @@ type EvidenceCatalogEntry = {
   source: "l1" | "l2" | "manual";
 };
 
-// Plan compiler rule 把 semanticGoal / requires / validation facts / BDD refs
+// Plan compiler rule 把 ValidatorAsset.semantic_goal / requires / validation facts / BDD refs
 // 映射到 catalog entries 和默认 step intents。它只做匹配和组装，不生成新 selector。
 type PlanCompilerRule = {
   // rule 稳定 ID
@@ -800,18 +779,18 @@ type RuntimeExecutionStep = {
 - 每个 `react_task` 的 `evidencePlan.evidenceRequirements` 必须至少包含一条 `required: true` 的证据要求，否则 plan 编译失败。
 - 每个 `react_task` 必须包含 `instanceSelector`、`evidencePlan.actions`、`evidencePlan.interpretationHints`、`evidencePlan.blockWhen` 和类型化 `EvidenceSelector`；Runtime 只判断证据是否可信采集到。
 - RuntimeExecutionPlan 内的 `EvidenceRequirement` 是 normalized 严格形态；外部 `ValidatorAsset` 草稿可以省略字段，但 plan compiler 必须在输出前补齐 `requirementId`、`selector`、`required`、`purpose`、`scope` 和 `instanceSelector`。
-- `EvidenceRequirement.selector` 必须来自 `EvidenceCatalogEntry.selector`。如果 goal 或 requires 找不到可用 catalog entry，plan compiler 只能输出 `catalogMisses`、降低 confidence 并请求补 catalog 或人工确认，不得临场生成 selector。
+- `EvidenceRequirement.selector` 必须来自 `EvidenceCatalogEntry.selector`。如果 `ValidatorAsset.semantic_goal` 或 `requires` 找不到可用 catalog entry，plan compiler 只能输出 `catalogMisses`、降低 confidence 并请求补 catalog 或人工确认，不得临场生成 selector。
 - graph node 只能引用 `RuntimeExecutionStep`；edge condition 只能使用 `RuntimeStepExitStatus` 和 `RuntimeStepGraphEventType`，不得包含 inline expression、复杂 state 表达、LLM 自由生成条件或任意运行时代码。
 - graph 只决定 step 间转移，不决定业务语义是否通过。业务 passed / failed 由 run 结束后的 Agent 解释和确认策略决定。
 - 图层不支持并行节点、join、reducer 或 graph-level parallel branch。多设备仍由 `ValidationInstance` 层支持；graph 是线性的 step 编排，每个 step 通过 `scope` 声明作用于某个 instance、全部 instance 或 run 级聚合。
 
 #### 2.5.1 Evidence Catalog 与轻量 Plan Compiler
 
-Evidence Catalog 和 Plan Compiler 是防止 Agent 临场猜 selector 的最小骨架。它们只解决一件事：把外部 `semantic_goal / requires / validation_fact_ids / bdd_refs` 归一化为内部 `PlanCompilerInput`，再映射为受控的 `EvidenceRequirement` 候选。
+Evidence Catalog 和 Plan Compiler 是防止 Agent 临场猜 selector 的最小骨架。它们只解决一件事：直接把 `ValidatorAsset.semantic_goal / requires / flow_identity.validation_fact_ids / bdd_refs` 映射为受控的 `EvidenceRequirement` 候选。
 
 轻量编译流程：
 
-1. AppPilot 从 `ValidatorAsset` 和 run options 中提取 `semantic_goal`、`requires`、`validation_fact_ids`、`bdd_refs`、platform、scenario 和 capability，并归一化为 `PlanCompilerInput.semanticGoal` 等内部字段。
+1. AppPilot 从 `ValidatorAsset` 和 run options 中读取 `semantic_goal`、`requires`、`flow_identity.validation_fact_ids`、`bdd_refs`、platform、scenario 和 capability。
 2. Plan compiler 先按精确 ID 匹配 `PlanCompilerRule.match.validationFactIds / bddRefs`，再按 `requires` 和 `goalKeywords` 做弱匹配；rule 必须按 `priority` 和 `matchScore` 排序。
 3. 命中的 rule 只输出 `catalogEntryIds` 和默认 step intents，不直接输出 selector。
 4. AppPilot 根据 `catalogEntryIds` 读取 `EvidenceCatalogEntry.selector`，生成 normalized `EvidenceRequirement`。
@@ -992,8 +971,6 @@ AppPilot 只产出材料，不决定外部系统是否采纳、发布、替换�
 ```ts
 // 验证流程身份，用于判断两个验证资产是否表达同一个验证流程
 type ValidatorFlowIdentity = {
-  // 规范化后的任务目标，例如 account_cross_device_sync
-  normalizedTaskGoal: string;
   // 验证平台
   platform: Platform;
   // 场景消歧字段
@@ -1650,9 +1627,9 @@ function buildRuntimePlanPrompt(
     "iOS UI 控制必须使用 WDA，Android UI 控制必须使用 uiautomator2。",
     "证据要求必须规范化为 EvidenceRequirement，selector 必须使用类型化 EvidenceSelector。",
     "EvidenceRequirement.selector 必须来自 evidence catalog；不得临场编造 selector。",
-    "如果 semanticGoal 或 requires 找不到 catalog/rule 命中，必须输出 compilerTrace.catalogMisses、降低 confidence，并写入 uncertainties。",
+    "如果 ValidatorAsset.semantic_goal 或 requires 找不到 catalog/rule 命中，必须输出 compilerTrace.catalogMisses、降低 confidence，并写入 uncertainties。",
     "每个 ReAct step 必须包含 intent、instanceSelector、evidenceRequirements、interpretationHints 和 blockWhen。",
-    "如果 semanticGoal 有多种合理解释，不得选择其中一种继续编译，必须输出 uncertainties 并降低 confidence。",
+    "如果 ValidatorAsset.semantic_goal 有多种合理解释，不得选择其中一种继续编译，必须输出 uncertainties 并降低 confidence。",
     "可缓存 plan 不得包含 run 内事件序号、timer 状态、checkpoint 状态、graph transition 中间态或 artifact 实例引用。",
     "<plan_build_skill>",
     skill.instructions,
@@ -1866,11 +1843,11 @@ Plan-build skill 必须遵守以下约束：
 - 每个验证触点必须有因果链：触发动作、预期状态变化、可观测通道和支撑理由。
 - 如果证据只能间接支持语义结论，必须声明不可观测风险，不能把间接证据写成直接证明。
 - 如果缺少关键工具、关键 evidence channel 或 selector 无法具体化，必须写入 `uncertainties`，不得硬编 selector。
-- 如果 semanticGoal 或 requires 找不到 catalog/rule 命中，必须写入 `compilerTrace.catalogMisses`，把 `confidence` 降到 `< 0.5`，并提示补 catalog、补 rule 或人工确认意图。
+- 如果 `ValidatorAsset.semantic_goal` 或 `requires` 找不到 catalog/rule 命中，必须写入 `compilerTrace.catalogMisses`，把 `confidence` 降到 `< 0.5`，并提示补 catalog、补 rule 或人工确认意图。
 - `compilerTrace.requirementSources` 必须一一记录每个 requirement 来自哪个 catalog entry 和版本。
 - `PlanCompilerRule.exactMatchRequired === true` 时，关键词弱匹配不得生成 required evidence；弱匹配只能作为候选和人工 review 输入。
 - 有 L2 历史口径时，优先复用历史 touchpoints；新 plan 偏离历史模式时必须标记偏差并降低 confidence。
-- 如果 `semanticGoal` 可以有多种合理解释，必须输出全部候选 touchpoint 解释，`confidence` 自动降至 `< 0.5`，写入 `uncertainties: ["语义目标存在歧义，需要人工确认意图"]`，不得选择其中一种继续编译。
+- 如果 `ValidatorAsset.semantic_goal` 可以有多种合理解释，必须输出全部候选 touchpoint 解释，`confidence` 自动降至 `< 0.5`，写入 `uncertainties: ["语义目标存在歧义，需要人工确认意图"]`，不得选择其中一种继续编译。
 
 置信度必须按以下规则校准：
 
@@ -1883,7 +1860,7 @@ Plan-build skill 的质量自检分为两类：
 
 - 结构性检查：所有工具来自 `authorizedTools`；所有 channel 来自 `EvidenceChannel`；每个 step 有 `instanceSelector`；每个 step 至少有一个 required evidence；每个 touchpoint 有因果链；每个 step 有 `blockWhen`；所有 selector 符合 `EvidenceSelector` 类型；graph 有合法终态路径且没有孤立节点。
 - 结构性检查还必须确认所有 selector 都能通过 `compilerTrace.requirementSources` 追溯到 catalog entry。
-- 语义性检查：`semanticGoal` 的所有关键行为都有 touchpoint 覆盖；直接/间接证据已区分；不可观测风险已声明；历史 L2 偏差已标记；catalog miss 已标记；置信度有校准依据；歧义已标记为 uncertainty。
+- 语义性检查：`ValidatorAsset.semantic_goal` 的所有关键行为都有 touchpoint 覆盖；直接/间接证据已区分；不可观测风险已声明；历史 L2 偏差已标记；catalog miss 已标记；置信度有校准依据；歧义已标记为 uncertainty。
 
 约束对照总结如下：
 
@@ -1950,20 +1927,22 @@ RuntimeExecutionPlan（执行层）
 
 你会收到一个 `ContextBundle`，其中可能包含：
 
-- `ValidatorAsset.semantic_goal`，进入 compiler 后归一化为 `PlanCompilerInput.semanticGoal`
+- `ValidatorAsset.semantic_goal`
 - `ValidatorAsset.requires`
 - `ValidatorAsset.executionSteps`
 - `ValidatorAsset.bdd_refs`
 - L1 资产：架构约束、业务边界、不可违反的工程约束
 - L2 资产：历史验证口径、历史证据模式、已人工确认记录
 - Evidence Catalog：可复用的 touchpoint、selector 和 interpretation hints
-- Plan Compiler Rule Set：从 semanticGoal / requires 到 catalog entries 的匹配规则
+- Evidence Catalog hash：`evidence_catalog_hash`
+- Plan Compiler Rule Set：从 `ValidatorAsset.semantic_goal / requires` 到 catalog entries 的匹配规则
+- Plan Compiler Rule Set hash：`compiler_rule_set_hash`
 - `runtimeContext.authorizedTools`
 - `runtimeContext.evidenceChannels`
 - 目标平台、目标设备、App 版本、SDK 版本、环境配置
 
 `ValidatorAsset.executionSteps` 只是声明式参考，不等于最终 Runtime step graph。
-如果它和 `semanticGoal` 或 L1/L2 约束冲突，必须在 `uncertainties` 中说明。
+如果它和 `ValidatorAsset.semantic_goal` 或 L1/L2 约束冲突，必须在 `uncertainties` 中说明。
 
 ## 输出
 
@@ -2021,7 +2000,7 @@ Plan-build 不能从自然语言目标直接编造 selector。
 
 ### 规则一：识别验证触点
 
-从 `semanticGoal` 中识别：
+从 `ValidatorAsset.semantic_goal` 中识别：
 
 - 什么状态变化是成功语义的证明？
 - 这个状态变化在哪个 evidence channel 可以观测到？
@@ -2039,14 +2018,14 @@ Plan-build 不能从自然语言目标直接编造 selector。
 
 ### 规则二：识别触发路径
 
-从 `semanticGoal`、`executionSteps`、BDD 场景和 L1/L2 资产中识别：
+从 `ValidatorAsset.semantic_goal`、`executionSteps`、BDD 场景和 L1/L2 资产中识别：
 
 - 需要什么前置条件？
 - 触发行为需要哪些操作步骤？
 - 操作步骤的顺序是否关键？
 - 是否涉及多设备、多账号、多平台或跨服务端同步？
 
-触发路径必须能完整触发 `semanticGoal` 描述的行为。
+触发路径必须能完整触发 `ValidatorAsset.semantic_goal` 描述的行为。
 不能生成和目标无关的孤立步骤。
 
 ### 规则三：步骤颗粒度控制
@@ -2100,7 +2079,7 @@ Agent 执行时可以调整 `actions`，但不能偏离 `intent`。
 编译 evidence requirements 时必须按以下顺序：
 
 1. 用 `validationFactIds` 和 `bddRefs` 精确匹配 `PlanCompilerRule`。
-2. 用 `requires` 和 `semanticGoal` 的关键词弱匹配 `PlanCompilerRule`。
+2. 用 `requires` 和 `ValidatorAsset.semantic_goal` 的关键词弱匹配 `PlanCompilerRule`。
 3. 按 `priority`、`matchScore` 和 `exactMatchRequired` 过滤 rule。
 4. 如果 `exactMatchRequired === true`，必须命中 `validationFactIds` 或 `bddRefs`，不能只靠关键词弱匹配。
 5. 从命中的 rule 中读取 `catalogEntryIds`。
@@ -2175,7 +2154,7 @@ sync_status = completed 可以说明服务端同步流程完成，
 
 ### 规则八：语义歧义必须阻断编译
 
-如果 `semanticGoal` 可以有多种合理解释，必须：
+如果 `ValidatorAsset.semantic_goal` 可以有多种合理解释，必须：
 
 - 输出所有候选 touchpoint 解释
 - `confidence` 自动降至 `< 0.5`
@@ -2240,7 +2219,7 @@ Plan-build Skill 不直接决定本次 run 是否最终通过。
 
 输出前必须完成语义性自检：
 
-- `semanticGoal` 的所有关键行为都有 touchpoint 覆盖
+- `ValidatorAsset.semantic_goal` 的所有关键行为都有 touchpoint 覆盖
 - 直接证据、间接证据、佐证证据已经区分
 - 不可观测风险已经声明
 - L2 历史偏差已经标记
