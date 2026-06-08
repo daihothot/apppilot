@@ -1,6 +1,6 @@
 # AppPilot 设计
 
-AppPilot 是面向代码助手和 App 工程的本地验证运行时。它负责接收外部验证资产和本次运行参数，构建和启动 App，调度设备或可选 Editor 会话，执行验证流程，采集执行证据，抽取结构化执行事实，并在人工确认后产出可供外部系统消费的回流与写回材料。
+AppPilot 是面向代码助手和 App 工程的本地验证运行时。它负责接收外部验证资产和本次运行参数，构建和启动 App，调度设备或可选 Editor 会话，执行验证流程，采集执行证据，抽取结构化执行事实，并在通过确认门禁后产出可供外部系统消费的回流与写回材料。
 
 ## 1. 职责边界
 
@@ -18,8 +18,8 @@ AppPilot 负责：
 - 安装、启动、停止和控制真实设备或 Unity Editor 会话。
 - 采集日志、App 侧结构化信号、业务事件、App WebSocket 证据、API/SQL 结果、线上数据快照、UI 观测、截图和设备状态。
 - 支持一个验证 run 下的多个 `ValidationInstance`，并为每个实例产出独立证据链, 并在 run 级聚合结果。
-- 产出执行证据、诊断信号、本机运行摘要和人工确认后的写回材料。
-- 在人工确认后产出 `ValidatorAssetGenerationMaterial` 和 `ValidationWritebackPackage`。
+- 产出执行证据、诊断信号、本机运行摘要和通过确认门禁后的写回材料。
+- 在通过人工确认或 auto-acceptance 门禁后产出 `ValidatorAssetGenerationMaterial` 和 `ValidationWritebackPackage`。
 - 通过 MCP tools 和 CLI fallback 对代码助手暴露能力。
 
 ### 1.2 AppPilot 不负责范围
@@ -48,8 +48,9 @@ ValidatorAsset + run options
   -> Runtime 执行 ReAct step / 处理事件 / 创建 timer 或进入观察窗口
   -> 采集证据并生成 ExecutionResult / EvidenceBundle / ExecutionFact
   -> run 级聚合与诊断
-  -> agent 检查证据 / 解释结果 / 生成反馈 / 提示人工确认
-  -> 人工确认执行结果、证据范围和回流材料
+  -> agent 读取证据 / 解释结果 / 生成反馈
+  -> confirmation policy 判定人工确认或 auto-acceptance
+  -> 通过确认门禁确认执行结果、证据范围和回流材料
   -> 生成可供外部消费的回流与写回材料
 ```
 
@@ -84,7 +85,7 @@ AppPilot 采用本地优先的运行方式。运行文件写入 `~/.apppilot`。
 
 run options 是本次执行的临时运行参数，不是稳定外部资产契约。它可以承载目标设备、构建/启动约束、多实例声明、App WebSocket 配置、Agent 控制配置、运行策略和证据保留策略。
 
-`Validation Task` 是 AppPilot 为本次验证创建的本地任务容器。它持有当前 task 的所有运行状态，包括 `ValidatorAsset` 快照、run options 快照、任务状态、执行计划引用、实例状态、检查点、事件游标、证据索引、人工确认状态和输出材料引用。它不属于外部资产契约，也不表达长期资产治理结论。
+`Validation Task` 是 AppPilot 为本次验证创建的本地任务容器。它持有当前 task 的所有运行状态，包括 `ValidatorAsset` 快照、run options 快照、任务状态、执行计划引用、实例状态、检查点、事件游标、证据索引、确认门禁状态和输出材料引用。它不属于外部资产契约，也不表达长期资产治理结论。
 
 ```yaml
 # Validator Asset 稳定 ID
@@ -105,6 +106,11 @@ flow_identity:
   validation_fact_ids:
   # 基于身份字段生成的稳定 hash
   identity_hash:
+# 验证语义目标；作为 plan compiler 的主要语义输入
+semantic_goal:
+# 验证要求；比 semantic_goal 更细的可观测约束，用于匹配 catalog/rule
+requires:
+  - <requirement>
 # 当前 Validator 验证的验证事实列表
 validates:
   - validation:<domain>/<validation_fact_name>
@@ -155,12 +161,16 @@ evidence_extractors:
     selector:
     # 提取后的执行事实类型
     output_fact_type:
-# 结果解释规则
+# 结果解释规则；只供 Agent run 级解释和人工 review 参考，不参与 Runtime step 判定
 result_interpretation:
-  # 判定通过条件
-  pass_when:
-  # 判定失败条件
-  fail_when:
+  # Agent 解释指引
+  interpretation_hints:
+  # 支撑通过解释的正向信号
+  positive_signals:
+  # 支撑失败、异常或不满足语义目标的负向信号
+  negative_signals:
+  # 语义歧义、不可观测风险或人工确认提示
+  ambiguity_notes:
 # 输出 schema
 outputs:
   # Execution Fact schema 引用
@@ -185,13 +195,13 @@ Codex Agent SDK 是 AppPilot 的内部执行引擎，不是外部资产契约。
 - 可授权给 agent 调用的 AppPilot MCP tools、权限边界和参数约束。
 - `RuntimeExecutionPlan` 缓存命中信息；未命中时提供编译执行计划所需上下文。
 - Run Event Bus、checkpoint、Evidence Store 和 artifact 索引的读取/写入入口。
-- Agent 预算、心跳策略、异常响应策略和人工确认要求。
+- Agent 预算、心跳策略、异常响应策略和确认门禁要求。
 
 启动 Codex Agent SDK session 时，AppPilot 先写入 agent session 初始化记录，再向 agent 提交任务输入。
 
-agent 的第一阶段输出应是可审计的 plan build 结果或计划修正建议，用于记录 agent 对验证目标、`RuntimeExecutionPlan` 形态、ReAct step、设备、证据通道、工具需求和不确定点的理解。是否进入人工确认由 Runtime 策略决定，不作为每次编译前的固定门禁；后续所有工具调用、事件响应、证据检查、反馈和人工确认提示都必须写入 `Validation Task` 状态和 run 目录。
+agent 的第一阶段输出应是可审计的 plan build 结果或计划修正建议，用于记录 agent 对验证目标、`RuntimeExecutionPlan` 形态、ReAct step、设备、证据通道、工具需求和不确定点的理解。是否进入人工确认或 auto-acceptance 由 confirmation policy 决定，不作为每次编译前的固定门禁；后续所有工具调用、事件响应、证据检查、反馈和确认门禁材料都必须写入 `Validation Task` 状态和 run 目录。
 
-Agent 在验证任务中负责理解输入、辅助生成或调整执行计划、调用授权工具、检查证据、生成反馈并提示人工确认。AppPilot runtime 负责持久化任务状态、检查点和事件记录，agent session 中断后不得导致 run 状态丢失。
+Agent 在验证任务中负责理解输入、辅助生成或调整执行计划、调用授权工具、检查证据、生成反馈，并按 confirmation policy 提示人工确认或生成 auto-acceptance 候选。AppPilot runtime 负责持久化任务状态、检查点和事件记录，agent session 中断后不得导致 run 状态丢失。
 
 恢复时，AppPilot 以本地状态数据库和 run 目录为准。如果 Codex Agent SDK session 仍可恢复，则绑定原 session 继续；如果不能恢复，则用已落盘的输入快照、checkpoint、event cursor 和证据索引创建新的 Codex Agent SDK session，并把前一次 session 记录为历史审计材料。
 
@@ -256,8 +266,8 @@ type ArtifactType =
   | "agent_record"
   // runtime plan JSON
   | "runtime_plan"
-  // 人工确认记录
-  | "human_confirmation"
+  // 确认门禁记录，包含 HumanConfirmationRecord、AutoAcceptanceRecord 和 AcceptanceRecord
+  | "acceptance"
   // 回流或写回材料
   | "writeback_material";
 
@@ -311,20 +321,20 @@ type EvidenceSelector =
 // RuntimeExecutionPlan 中声明的证据要求。required 只表示必须采集到可信证据，
 // 不表示 Runtime 要据此判定业务语义 passed / failed。
 type EvidenceRequirement = {
-  // 证据要求 ID；为空时由 AppPilot 生成
-  requirementId?: string;
+  // 证据要求 ID；由 plan compiler 生成并在 normalized plan 中必填
+  requirementId: string;
   // 证据通道
   channel: EvidenceChannel;
   // 类型化证据选择器；selector.channel 必须与 channel 一致
-  selector?: EvidenceSelector;
+  selector: EvidenceSelector;
   // 是否为 Agent 解释和人工 review 必需的证据
-  required?: boolean;
+  required: boolean;
   // 证据用途
-  purpose?: "semantic_interpretation" | "diagnostic" | "context" | "audit";
+  purpose: "semantic_interpretation" | "diagnostic" | "context" | "audit";
   // 采集范围
-  scope?: "run" | "instance" | "step";
-  // 证据来自哪个验证实例；多设备场景必须填写或由 step.instanceSelector 继承
-  instanceSelector?: string;
+  scope: "run" | "instance" | "step";
+  // 证据来自哪个验证实例；run 级证据使用 "run"，all_instances 使用 "all_instances"
+  instanceSelector: string;
   // 关联的验证事实 ID 列表
   validationFactIds?: string[];
   // 证据通道长时间无信号的诊断阈值；用于 ReAct 观察和诊断，不直接发布 Event Bus 心跳
@@ -344,7 +354,7 @@ type RuntimeExecutionStepScope =
   | "instance"
   // 在本次 run 的所有 ValidationInstance 上执行；图层仍按线性 step 编排，不表达并行节点
   | "all_instances"
-  // run 级步骤，用于汇总 evidence、对比多个 instance、生成 RunAggregationResult、等待人工确认或判断是否进入写回材料生成
+  // run 级步骤，用于汇总 evidence、对比多个 instance、生成 RunAggregationResult、等待确认门禁或判断是否进入写回材料生成
   | "run";
 
 // step 退出态；graph edge 只能基于受控退出态做转移
@@ -355,10 +365,10 @@ type RuntimeStepExitStatus =
   | "step_evidence_insufficient"
   // step 因工具、前提或证据通道不可用被阻塞
   | "step_blocked"
-  // 人工确认通过
-  | "manual_approved"
-  // 人工确认拒绝
-  | "manual_rejected"
+  // 确认门禁通过，来源可以是人工确认或 auto-acceptance
+  | "acceptance_approved"
+  // 确认门禁拒绝
+  | "acceptance_rejected"
   // run 已取消
   | "run_cancelled";
 
@@ -452,11 +462,11 @@ type StepEvidencePlan = {
   // step 要达成的单一 intent
   intent: string;
   // 建议动作序列，Agent 可调整但不得偏离 intent
-  actions?: StepActionSpec[];
+  actions: StepActionSpec[];
   // 当前 step 必须采集的证据
   evidenceRequirements: EvidenceRequirement[];
   // 给 Agent 和人工 review 的解释指引
-  interpretationHints?: InterpretationHint[];
+  interpretationHints: InterpretationHint[];
   // 采集不到可信证据时进入 step_blocked 的条件
   blockWhen: string[];
 };
@@ -514,14 +524,14 @@ type ReactTaskSpec = {
 // Runtime 直接执行的确定性步骤规约
 type RuntimeActionSpec = {
   // 确定性步骤子类型
-  kind: "wait" | "observe_window" | "collect_evidence" | "human_confirmation";
+  kind: "wait" | "observe_window" | "collect_evidence" | "confirmation_gate";
   // 等待时长；kind 为 wait 时使用
   durationMs?: number;
   // 观察窗口配置；kind 为 observe_window 时使用
   observe?: ObservationWindowConfig;
   // 证据采集要求；kind 为 collect_evidence 时使用
   collect?: EvidenceRequirement[];
-  // 人工确认提示类型；kind 为 human_confirmation 时使用
+  // 确认门禁提示类型；kind 为 confirmation_gate 且需要人工确认时使用
   humanPromptType?: "confirm_result" | "confirm_evidence_scope" | "confirm_writeback_material" | "manual_intervention";
 };
 
@@ -553,6 +563,132 @@ type TargetSignatureInput = {
   editorRequired?: boolean;
 };
 
+// Plan compiler 的内部归一化输入；它由外部 ValidatorAsset 和 run options 提取生成。
+// 外部字段可以使用 snake_case；进入 compiler 后统一为 camelCase。
+type PlanCompilerInput = {
+  // 来自 ValidatorAsset.semantic_goal 或 flow_identity.normalized_task_goal
+  semanticGoal: string;
+  // 来自 ValidatorAsset.requires
+  requires: string[];
+  // 来自 flow_identity.validation_fact_ids 或 validates
+  validationFactIds: string[];
+  // 来自 ValidatorAsset.bdd_refs
+  bddRefs: string[];
+  // 目标平台；可以由 ValidatorAsset 或 run options 收敛
+  platform: Platform;
+  // 场景消歧字段
+  scenario?: string;
+  // 能力消歧字段
+  capability?: string;
+};
+
+// Evidence Catalog 记录一个可复用的语义触点到证据 selector 的映射。
+// 它是 AppPilot 内部编译输入，不是外部 ValidatorAsset 契约。
+type EvidenceCatalogEntry = {
+  // catalog entry 稳定 ID
+  catalogEntryId: string;
+  // catalog entry 版本
+  version: string;
+  // 业务域或模块
+  domain: string;
+  // 能力或功能消歧字段
+  capability?: string;
+  // 场景消歧字段
+  scenario?: string;
+  // 可匹配的语义别名，例如 "账号互通"、"跨设备同步"
+  semanticAliases: string[];
+  // 该 entry 覆盖的验证触点
+  touchpoint: string;
+  // 关联验证事实 ID；用于 goal/requires 精准匹配
+  validationFactIds?: string[];
+  // 关联 BDD 场景 ID；用于从 bdd_refs 精准匹配
+  bddRefs?: string[];
+  // 证据通道
+  channel: EvidenceChannel;
+  // 类型化 selector；Agent 只能引用或组合 catalog 中已有 selector
+  selector: EvidenceSelector;
+  // 是否默认作为 required evidence
+  required: boolean;
+  // 证据用途
+  purpose: EvidenceRequirement["purpose"];
+  // 默认采集范围
+  scope: EvidenceRequirement["scope"];
+  // 默认解释指引
+  interpretationHints: InterpretationHint[];
+  // 采集该证据需要的工具能力
+  requiredTools: string[];
+  // 该 selector 的不可观测风险或误判风险
+  risks?: string[];
+  // 来源；L2 来源表示已经有历史确认口径
+  source: "l1" | "l2" | "manual";
+};
+
+// Plan compiler rule 把 semanticGoal / requires / validation facts / BDD refs
+// 映射到 catalog entries 和默认 step intents。它只做匹配和组装，不生成新 selector。
+type PlanCompilerRule = {
+  // rule 稳定 ID
+  ruleId: string;
+  // rule 版本
+  version: string;
+  // rule 优先级；数值越小优先级越高
+  priority: number;
+  // 是否必须命中 validationFactIds 或 bddRefs 等精确条件；为 true 时禁止只靠关键词命中
+  exactMatchRequired: boolean;
+  // 最低匹配分；低于该分数只能作为低置信候选，不能直接生成 required evidence
+  minMatchScore: number;
+  // rule 匹配条件；精确 ID 优先于关键词，关键词只作为弱匹配候选
+  match: {
+    goalKeywords?: string[];
+    requires?: string[];
+    validationFactIds?: string[];
+    bddRefs?: string[];
+    platform?: Platform;
+    scenario?: string;
+    capability?: string;
+  };
+  // rule 输出；只引用 catalog entry，不内联 selector
+  emit: {
+    catalogEntryIds: string[];
+    defaultStepIntents: string[];
+    requiredCatalogEntryIds?: string[];
+  };
+};
+
+// plan compiler 的审计 trace；用于证明 selector 来自 catalog，而不是 Agent 临场猜测。
+type PlanCompilerTrace = {
+  // 本次使用的 catalog 内容 hash
+  evidenceCatalogHash: string;
+  // 本次使用的 compiler rule set hash
+  compilerRuleSetHash: string;
+  // rule 匹配详情；用于审计精确命中和关键词弱匹配是否被正确区分，也是命中 rule 的唯一来源
+  matchedRules: Array<{
+    ruleId: string;
+    ruleVersion: string;
+    priority: number;
+    matchScore: number;
+    matchKind: "exact" | "weak" | "mixed";
+    exactMatchSatisfied: boolean;
+    matchedBy: Array<"validationFactIds" | "bddRefs" | "requires" | "goalKeywords" | "platform" | "scenario" | "capability">;
+  }>;
+  // 被选中的 catalog entry ID
+  selectedCatalogEntryIds: string[];
+  // 由 catalog entry 生成的 evidence requirement ID
+  generatedRequirementIds: string[];
+  // evidence requirement 到 catalog entry 的一一来源关系
+  requirementSources: Array<{
+    requirementId: string;
+    catalogEntryId: string;
+    catalogEntryVersion: string;
+    selectorHash: string;
+  }>;
+  // 未命中的语义触点或 requires；存在时必须降低 confidence 并进入 uncertainties
+  catalogMisses?: Array<{
+    semanticToken: string;
+    reason: "no_rule" | "no_catalog_entry" | "missing_tool" | "channel_unavailable";
+    suggestedAction: "add_catalog_entry" | "add_compiler_rule" | "request_human_clarification";
+  }>;
+};
+
 // RuntimeExecutionPlan 的复用匹配键
 type RuntimePlanCacheKey = {
   // ValidatorAsset ID
@@ -565,6 +701,10 @@ type RuntimePlanCacheKey = {
   planSchemaVersion: string;
   // AppPilot compiler 版本
   compilerVersion: string;
+  // Evidence Catalog hash；catalog 变化必须使缓存失效
+  evidenceCatalogHash: string;
+  // Plan compiler rule set hash；rule 变化必须使缓存失效
+  compilerRuleSetHash: string;
   // 目标环境签名 hash；由 TargetSignatureInput 的 canonical JSON 计算
   targetSignatureHash: string;
   // step graph skeleton hash；由 RuntimeStepGraphDefinition 的 canonical JSON 计算
@@ -635,8 +775,8 @@ type RuntimeExecutionStep = {
   kind: RuntimeExecutionStepKind;
   // step 作用范围
   scope: RuntimeExecutionStepScope;
-  // instance 选择器；scope 为 instance 时使用，例如 primary、secondary 或具体 instanceId
-  instanceSelector?: string;
+  // instance 选择器；scope 为 run 时使用 "run"，scope 为 all_instances 时使用 "all_instances"
+  instanceSelector: string;
   // step 内部 spec hash；用于区分 step graph skeleton 和 step 内容缓存
   stepSpecHash: string;
   // ReAct 任务规约；kind 为 react_task 时必填
@@ -651,17 +791,42 @@ type RuntimeExecutionStep = {
 ```
 
 - `RuntimeExecutionPlan` 缓存命中后，AppPilot 可以跳过外部 `ValidatorAsset` 的重新解析和 step 编译。
-- 缓存直接复用必须同时满足 `flowIdentityHash`、`validatorAssetHash`、`planSchemaVersion`、`compilerVersion`、`targetSignatureHash` 和 `stepGraphHash` 完全一致。
+- 缓存直接复用必须同时满足 `flowIdentityHash`、`validatorAssetHash`、`planSchemaVersion`、`compilerVersion`、`evidenceCatalogHash`、`compilerRuleSetHash`、`targetSignatureHash` 和 `stepGraphHash` 完全一致。
 - 缓存态 `RuntimeExecutionPlan` 不保存 run 内事件序号、timer 状态、事件处理记录、checkpoint 或 artifact 引用。
 - `targetSignatureHash` 必须使用 `TargetSignatureInput` 生成 canonical JSON 后计算 hash。canonical JSON 规则是：移除 `undefined` 字段、对象 key 按字典序排序、字符串数组去重后按字典序排序、布尔和数字保持原始类型，再对 UTF-8 JSON 字符串计算 `sha256`。
 - `stepGraphHash` 必须使用 `RuntimeStepGraphDefinition` 中的 graph skeleton 字段生成 canonical JSON 后计算 hash。参与字段只包括 `graphSchemaVersion`、`entryNodeId`、`nodes.nodeId`、`nodes.stepId`、`edges.edgeId`、`edges.fromNodeId`、`edges.toNodeId`、`edges.condition`、`edges.priority` 和 `terminalNodeIds`，不得包含 step 内部 `reactTask`、`runtimeAction` 或 artifact 引用。
 - `stepSpecHash` 必须基于单个 `RuntimeExecutionStep` 的内部 spec 计算，用于缓存或比较 step 内容；完整 `planContentHash` 仍用于 `RuntimeExecutionPlan` 完整性校验。
 - 完整 `RuntimeExecutionPlan` 直接复用仍必须满足完整 cache key；`stepGraphHash` 用于独立判断 step 间图骨架是否变化，避免把 step 内部 spec 变化误判为 graph skeleton 变化。
 - 每个 `react_task` 的 `evidencePlan.evidenceRequirements` 必须至少包含一条 `required: true` 的证据要求，否则 plan 编译失败。
-- 每个 `react_task` 必须包含 `instanceSelector`、`evidencePlan.blockWhen` 和类型化 `EvidenceSelector`；Runtime 只判断证据是否可信采集到。
+- 每个 `react_task` 必须包含 `instanceSelector`、`evidencePlan.actions`、`evidencePlan.interpretationHints`、`evidencePlan.blockWhen` 和类型化 `EvidenceSelector`；Runtime 只判断证据是否可信采集到。
+- RuntimeExecutionPlan 内的 `EvidenceRequirement` 是 normalized 严格形态；外部 `ValidatorAsset` 草稿可以省略字段，但 plan compiler 必须在输出前补齐 `requirementId`、`selector`、`required`、`purpose`、`scope` 和 `instanceSelector`。
+- `EvidenceRequirement.selector` 必须来自 `EvidenceCatalogEntry.selector`。如果 goal 或 requires 找不到可用 catalog entry，plan compiler 只能输出 `catalogMisses`、降低 confidence 并请求补 catalog 或人工确认，不得临场生成 selector。
 - graph node 只能引用 `RuntimeExecutionStep`；edge condition 只能使用 `RuntimeStepExitStatus` 和 `RuntimeStepGraphEventType`，不得包含 inline expression、复杂 state 表达、LLM 自由生成条件或任意运行时代码。
 - graph 只决定 step 间转移，不决定业务语义是否通过。业务 passed / failed 由 run 结束后的 Agent 解释和确认策略决定。
 - 图层不支持并行节点、join、reducer 或 graph-level parallel branch。多设备仍由 `ValidationInstance` 层支持；graph 是线性的 step 编排，每个 step 通过 `scope` 声明作用于某个 instance、全部 instance 或 run 级聚合。
+
+#### 2.5.1 Evidence Catalog 与轻量 Plan Compiler
+
+Evidence Catalog 和 Plan Compiler 是防止 Agent 临场猜 selector 的最小骨架。它们只解决一件事：把外部 `semantic_goal / requires / validation_fact_ids / bdd_refs` 归一化为内部 `PlanCompilerInput`，再映射为受控的 `EvidenceRequirement` 候选。
+
+轻量编译流程：
+
+1. AppPilot 从 `ValidatorAsset` 和 run options 中提取 `semantic_goal`、`requires`、`validation_fact_ids`、`bdd_refs`、platform、scenario 和 capability，并归一化为 `PlanCompilerInput.semanticGoal` 等内部字段。
+2. Plan compiler 先按精确 ID 匹配 `PlanCompilerRule.match.validationFactIds / bddRefs`，再按 `requires` 和 `goalKeywords` 做弱匹配；rule 必须按 `priority` 和 `matchScore` 排序。
+3. 命中的 rule 只输出 `catalogEntryIds` 和默认 step intents，不直接输出 selector。
+4. AppPilot 根据 `catalogEntryIds` 读取 `EvidenceCatalogEntry.selector`，生成 normalized `EvidenceRequirement`。
+5. Agent 在 plan-build 阶段只能选择、组合、排序和解释 catalog 命中的 touchpoints；不能生成 catalog 中不存在的 selector。
+6. 如果目标语义找不到 rule 或 catalog entry，plan-build 必须输出 `compilerTrace.catalogMisses`，把 `confidence` 降到 `< 0.5`，并在 `uncertainties` 中要求补 catalog、补 compiler rule 或人工确认意图。
+
+Catalog 和 rule 的边界：
+
+- `EvidenceCatalogEntry` 是稳定 selector 和解释口径的最小单元，可以来自 L1 架构知识、L2 历史确认口径或人工维护。
+- `PlanCompilerRule` 只做匹配和组装，不允许包含 inline expression、运行时代码或自然语言 selector。
+- `PlanCompilerRule.exactMatchRequired === true` 时，必须命中 `validationFactIds` 或 `bddRefs`，不能只靠 `goalKeywords` 或 `requires` 生成 required evidence。
+- 关键词弱匹配只能生成候选 touchpoint 和 `reviewChecklist`，除非 `matchScore >= minMatchScore` 且没有更高优先级的精确匹配冲突。
+- `PlanCompilerTrace.requirementSources` 必须记录每个 `EvidenceRequirement.requirementId` 对应的 `catalogEntryId`、版本和 selector hash，保证审计时可以一跳追溯。
+- catalog/rule 变化会改变 `evidenceCatalogHash` 或 `compilerRuleSetHash`，从而使 `RuntimeExecutionPlan` 缓存失效。
+- Agent 可以提出 catalog gap，但不能把 proposed selector 写进可执行 `RuntimeExecutionPlan`。补 catalog 必须作为人工 review 或资产维护动作发生。
 
 ### 2.6 Run 聚合与结果解释
 
@@ -820,7 +985,7 @@ type RunAggregationResult = {
 
 ### 2.7 回流与写回
 
-人工确认后，AppPilot 生成可供外部系统消费的回流与写回材料，包括执行结果、证据摘要、结构化执行事实、诊断信号、本机运行摘要和 Validator Asset 更新候选。
+通过确认门禁后，AppPilot 生成可供外部系统消费的回流与写回材料，包括执行结果、证据摘要、结构化执行事实、诊断信号、本机运行摘要和 Validator Asset 更新候选。确认门禁可以来自人工确认，也可以来自满足 maturity policy 的 auto-acceptance；bootstrap 阶段只能来自人工确认。
 
 AppPilot 只产出材料，不决定外部系统是否采纳、发布、替换、废弃或长期治理这些材料。
 
@@ -841,17 +1006,67 @@ type ValidatorFlowIdentity = {
   identityHash: string;
 };
 
-// 生成 Validator Asset 候选材料时使用的人工确认摘要
-type ValidatorAssetManualConfirmationSummary = {
-  // 确认人
-  confirmedBy: string;
-  // 确认时间
-  confirmedAt: string;
-  // 人工确认的结果
-  result: "passed" | "failed" | "partial";
-  // 人工确认覆盖的范围
+// 确认门禁类型
+type AcceptanceType =
+  // 人工确认
+  | "human_confirmation"
+  // 由 confirmation policy 生成的自动接受记录
+  | "auto_acceptance";
+
+// 确认门禁结果
+type AcceptanceDecision =
+  // 接受本次 Agent 解释和证据范围
+  | "accepted"
+  // 拒绝本次解释或证据范围
+  | "rejected"
+  // 需要修改或补采后再确认
+  | "needs_changes";
+
+// 通过确认门禁后的统一记录；human confirmation 和 auto-acceptance 都必须归一化成该记录
+type AcceptanceRecord = {
+  // 确认门禁记录 ID
+  acceptanceId: string;
+  // 单次验证 run ID
+  runId: string;
+  // 本地任务 ID
+  taskId: string;
+  // 确认门禁类型
+  acceptanceType: AcceptanceType;
+  // 确认门禁结果
+  decision: AcceptanceDecision;
+  // 确认覆盖范围
+  scope: HumanConfirmationScope;
+  // 支撑本次确认门禁的证据引用
+  evidenceRefs: string[];
+  // 策略或人工确认理由，必须可审计
+  reason: string;
+  // 人工确认记录引用；acceptanceType 为 human_confirmation 时必须存在
+  humanConfirmationRef?: string;
+  // auto-acceptance 记录引用；acceptanceType 为 auto_acceptance 时必须存在
+  autoAcceptanceRef?: string;
+  // 产生确认门禁的主体，例如 human user ID 或 confirmation_policy
+  acceptedBy: string;
+  // 通过门禁的时间
+  acceptedAt: string;
+  // 确认门禁 artifact 引用
+  artifactRef: string;
+};
+
+// 生成 Validator Asset 候选材料时使用的确认门禁摘要
+type ValidatorAssetAcceptanceSummary = {
+  // 确认门禁类型
+  acceptanceType: AcceptanceType;
+  // 确认门禁记录引用
+  acceptanceRef: string;
+  // 产生确认门禁的主体
+  acceptedBy: string;
+  // 通过门禁的时间
+  acceptedAt: string;
+  // 确认门禁结果
+  decision: AcceptanceDecision;
+  // 确认覆盖的范围
   scopeConfirmed: HumanConfirmationScope;
-  // 人工备注
+  // 人工备注或策略说明
   notes?: string;
 };
 
@@ -911,8 +1126,8 @@ type ValidatorAssetGenerationMaterial = {
   validationFactIds: string[];
   // 执行环境
   environment: ExecutionResult["environment"];
-  // 本次人工确认结果
-  manualConfirmation: ValidatorAssetManualConfirmationSummary;
+  // 本次确认门禁结果
+  acceptanceSummary: ValidatorAssetAcceptanceSummary;
   // 支撑生成 Validator Asset 的证据
   supportingEvidence: ValidatorAssetSupportingEvidence;
   // 从执行过程归纳出的验证流程材料
@@ -999,7 +1214,7 @@ type ValidatorAssetCandidate = {
   generatedAt: string;
 };
 
-// 人工确认后的写回材料包；供外部系统消费
+// 通过确认门禁后的写回材料包；供外部系统消费
 type ValidationWritebackPackage = {
   // 写回材料包 ID
   packageId: string;
@@ -1013,8 +1228,8 @@ type ValidationWritebackPackage = {
   validatorAssetHash: string;
   // 生成时间
   generatedAt: string;
-  // 人工确认记录引用；必须存在
-  confirmationRef: string;
+  // 确认门禁记录引用；必须存在
+  acceptanceRef: string;
   // run 级聚合结果引用
   runAggregationResultRef: string;
   // 本机运行摘要；只表达本机观察记录
@@ -1036,10 +1251,10 @@ type ValidationWritebackPackage = {
 };
 ```
 
-- 已确认材料包必须引用 run、evidence bundle、execution facts、artifacts、确认人和确认范围。
+- 已确认材料包必须引用 run、evidence bundle、execution facts、artifacts、确认门禁记录和确认范围。
 - `ValidationWritebackPackage` 不复制 `RunAggregationResult` 的聚合字段；外部系统需要证据充分性、失败归因、覆盖范围和诊断信号时，必须通过 `runAggregationResultRef` 读取。
 - AppPilot 可以生成验证事实候选和 Validator Asset 候选，但不决定外部系统如何创建、修订、替换、发布或裁剪资产。
-- `failed / partial / blocked` run 仍然可以产出证据和 diagnostics。它们只有在显式确认后才可以产出写回材料包。
+- `failed / partial / blocked` run 仍然可以产出证据和 diagnostics。它们只有在通过确认门禁后才可以产出写回材料包。
 
 ## 3. Runtime Step Graph 实现选项
 
@@ -1071,7 +1286,7 @@ LangGraph 的主要收益在于工程实现，而不是扩大 schema 表达力�
 
 - 可以复用成熟的图执行框架来承载 step 间转移、循环边和终止态。
 - 可以把 step graph 的执行记录、节点状态和边触发过程组织成更清晰的 runtime trace。
-- 可以让 `step_evidence_collected / step_evidence_insufficient / step_blocked / manual_rejected` 等转移路径在执行层更直接可见。
+- 可以让 `step_evidence_collected / step_evidence_insufficient / step_blocked / acceptance_rejected` 等转移路径在执行层更直接可见。
 - 可以降低 AppPilot 自研 graph executor 的初始工作量。
 - 如果后续需要更复杂的调度能力，可以先在实现层实验，而不污染 AppPilot 的 schema 契约。
 
@@ -1089,9 +1304,9 @@ LangGraph 也会引入额外成本：
 
 ### 4.1 控制边界
 
-Agent 控制层基于 Codex Agent SDK 实现，负责理解 `ValidatorAsset` 和 run options、辅助生成或调整 `RuntimeExecutionPlan`、调用授权工具、检查证据、生成反馈并提示人工确认。
+Agent 控制层基于 Codex Agent SDK 实现，负责理解 `ValidatorAsset` 和 run options、辅助生成或调整 `RuntimeExecutionPlan`、调用授权工具、检查证据、生成反馈并按 confirmation policy 提示人工确认或生成 auto-acceptance 候选。
 
-Agent 不持有长期资产状态，不直接写入外部资产，也不替代人工确认。AppPilot runtime 必须持久化任务状态、事件、checkpoint、证据索引和确认记录，agent session 中断后不得导致 run 状态丢失。
+Agent 不持有长期资产状态，不直接写入外部资产，也不替代 bootstrap 阶段的人工确认或更高 maturityLevel 下的 confirmation policy。AppPilot runtime 必须持久化任务状态、事件、checkpoint、证据索引和确认门禁记录，agent session 中断后不得导致 run 状态丢失。
 
 ### 4.2 初始化与启动
 
@@ -1103,10 +1318,10 @@ Codex Agent SDK session 的初始化由 AppPilot runtime 触发。初始化必�
 - 写入 `ValidatorAsset` 快照、run options 快照和输入 hash。
 - 加载 AppPilot MCP tools 的授权清单。
 - 注册 event bus、checkpoint、Evidence Store 和 artifact 索引入口。
-- 写入 agent 预算、心跳策略、异常响应策略和人工确认策略。
+- 写入 agent 预算、心跳策略、异常响应策略和确认门禁策略。
 - 记录 session 启动时间、SDK 版本和 AppPilot runtime 版本。
 
-启动阶段必须向 Codex Agent SDK 提交本次验证输入，并要求 agent 先产出可审计的 plan build 结果或计划修正建议，说明它对验证目标、`RuntimeExecutionPlan` 形态、ReAct step、设备、证据通道、工具需求和不确定点的理解。是否进入人工确认由 Runtime 策略决定，不作为每次编译前的固定门禁。agent 不能绕过 AppPilot runtime 直接修改 step 状态、timer、checkpoint、数据库记录或写回材料。
+启动阶段必须向 Codex Agent SDK 提交本次验证输入，并要求 agent 先产出可审计的 plan build 结果或计划修正建议，说明它对验证目标、`RuntimeExecutionPlan` 形态、ReAct step、设备、证据通道、工具需求和不确定点的理解。是否进入人工确认或 auto-acceptance 由 confirmation policy 决定，不作为每次编译前的固定门禁。agent 不能绕过 AppPilot runtime 直接修改 step 状态、timer、checkpoint、数据库记录或写回材料。
 
 ### 4.3 Codex SDK 接入
 
@@ -1319,6 +1534,14 @@ type RuntimePlanBuildInput = {
   validatorAssetHash: string;
   // 本次 run options 快照
   runOptionsSnapshot: unknown;
+  // Evidence Catalog 快照；只包含本次 run 可用的 entry
+  evidenceCatalogSnapshot: EvidenceCatalogEntry[];
+  // Evidence Catalog 内容 hash
+  evidenceCatalogHash: string;
+  // Plan compiler rule set 快照；只包含本次 run 可用的 rule
+  compilerRuleSetSnapshot: PlanCompilerRule[];
+  // Plan compiler rule set 内容 hash
+  compilerRuleSetHash: string;
   // 目标设备、构建、证据、事件和安全约束
   runtimeContext: {
     // 允许使用的内部 MCP tools 清单
@@ -1341,8 +1564,8 @@ type RuntimePlanBuildInput = {
       android: "uiautomator2";
     };
   };
-  // RuntimeExecutionPlan 输出 schema
-  runtimeExecutionPlanSchema: unknown;
+  // PlanBuildOutput 输出 schema；RuntimeExecutionPlan 必须包在 PlanBuildOutput.runtimeExecutionPlan 内
+  planBuildOutputSchema: unknown;
   // 本次编译超时时间
   timeoutMs?: number;
 };
@@ -1350,8 +1573,12 @@ type RuntimePlanBuildInput = {
 type RuntimePlanBuildResult = {
   // Codex thread ID
   threadId: string;
+  // 完整 plan-build 输出；必须持久化为 agent_record
+  planBuildOutput: PlanBuildOutput;
   // 编译出的内部 RuntimeExecutionPlan
   runtimeExecutionPlan: RuntimeExecutionPlan;
+  // PlanBuildOutput artifact 引用；RuntimeExecutionPlan.agentPlanRef 必须指向该引用
+  planBuildOutputRef: string;
   // agent 原始最终响应
   rawAgentResponse: string;
   // Codex SDK 返回的完成项
@@ -1422,6 +1649,8 @@ function buildRuntimePlanPrompt(
     "Run Event Bus 只表达 step 级、系统级、timer / observation window、外部输入和人工确认事件；App WebSocket、日志 watcher、UI 观测和截图默认编译为证据采集或 ReAct observation。",
     "iOS UI 控制必须使用 WDA，Android UI 控制必须使用 uiautomator2。",
     "证据要求必须规范化为 EvidenceRequirement，selector 必须使用类型化 EvidenceSelector。",
+    "EvidenceRequirement.selector 必须来自 evidence catalog；不得临场编造 selector。",
+    "如果 semanticGoal 或 requires 找不到 catalog/rule 命中，必须输出 compilerTrace.catalogMisses、降低 confidence，并写入 uncertainties。",
     "每个 ReAct step 必须包含 intent、instanceSelector、evidenceRequirements、interpretationHints 和 blockWhen。",
     "如果 semanticGoal 有多种合理解释，不得选择其中一种继续编译，必须输出 uncertainties 并降低 confidence。",
     "可缓存 plan 不得包含 run 内事件序号、timer 状态、checkpoint 状态、graph transition 中间态或 artifact 实例引用。",
@@ -1434,17 +1663,29 @@ function buildRuntimePlanPrompt(
     "<run_options_snapshot_json>",
     JSON.stringify(input.runOptionsSnapshot),
     "</run_options_snapshot_json>",
+    "<evidence_catalog_snapshot_json>",
+    JSON.stringify(input.evidenceCatalogSnapshot),
+    "</evidence_catalog_snapshot_json>",
+    "<evidence_catalog_hash>",
+    input.evidenceCatalogHash,
+    "</evidence_catalog_hash>",
+    "<compiler_rule_set_snapshot_json>",
+    JSON.stringify(input.compilerRuleSetSnapshot),
+    "</compiler_rule_set_snapshot_json>",
+    "<compiler_rule_set_hash>",
+    input.compilerRuleSetHash,
+    "</compiler_rule_set_hash>",
     "<runtime_context_json>",
     JSON.stringify(input.runtimeContext),
     "</runtime_context_json>",
-    "<runtime_execution_plan_schema_json>",
-    JSON.stringify(input.runtimeExecutionPlanSchema),
-    "</runtime_execution_plan_schema_json>",
+    "<plan_build_output_schema_json>",
+    JSON.stringify(input.planBuildOutputSchema),
+    "</plan_build_output_schema_json>",
   ].join("\n");
 }
 
-function parseRuntimeExecutionPlan(rawAgentResponse: string): RuntimeExecutionPlan {
-  return JSON.parse(rawAgentResponse) as RuntimeExecutionPlan;
+function parsePlanBuildOutput(rawAgentResponse: string): PlanBuildOutput {
+  return JSON.parse(rawAgentResponse) as PlanBuildOutput;
 }
 
 async function buildRuntimeExecutionPlanWithCodex(
@@ -1481,7 +1722,7 @@ async function buildRuntimeExecutionPlanWithCodex(
         },
       ],
       {
-        outputSchema: input.runtimeExecutionPlanSchema,
+        outputSchema: input.planBuildOutputSchema,
         signal: abortController.signal,
       },
     );
@@ -1526,11 +1767,24 @@ async function buildRuntimeExecutionPlanWithCodex(
       throw new Error("Codex thread ID was not established");
     }
 
-    const runtimeExecutionPlan = parseRuntimeExecutionPlan(rawAgentResponse);
+    const planBuildOutput = parsePlanBuildOutput(rawAgentResponse);
+    const runtimeExecutionPlan = planBuildOutput.runtimeExecutionPlan;
+    const planBuildOutputRef = await session.audit.writeAgentRecord({
+      taskId: input.taskId,
+      runId: input.runId,
+      threadId,
+      artifactType: "agent_record",
+      purpose: "plan_build_output",
+      content: planBuildOutput,
+      observedAt: new Date().toISOString(),
+    });
+    runtimeExecutionPlan.agentPlanRef = planBuildOutputRef;
 
     return {
       threadId,
+      planBuildOutput,
       runtimeExecutionPlan,
+      planBuildOutputRef,
       rawAgentResponse,
       items,
       eventCount,
@@ -1550,7 +1804,7 @@ async function buildRuntimeExecutionPlanWithCodex(
 
 Plan-build skill 是语义层和执行层之间的唯一桥梁。它的职责不是生成传统自动化测试 assert，而是把 `ValidatorAsset` 的语义目标编译成可执行的观察计划：验证触点、触发步骤、证据要求、解释指引和不确定点。
 
-Plan-build skill 输出必须是结构化 `PlanBuildOutput`。`stepGraph` 用于执行，`semanticInterpretation`、`verificationTouchpoints`、`confidence` 和 `uncertainties` 用于审计和人工 review。
+Plan-build skill 输出必须是结构化 `PlanBuildOutput`。`runtimeExecutionPlan` 用于执行，`semanticInterpretation`、`verificationTouchpoints`、`confidence` 和 `uncertainties` 必须持久化为 `agent_record`，供审计和人工 review 使用。`RuntimeExecutionPlan.agentPlanRef` 必须指向该 `PlanBuildOutput` artifact，避免执行计划和 Agent 语义理解脱节。
 
 ```ts
 type VerificationCausalChain = {
@@ -1588,6 +1842,8 @@ type PlanBuildOutput = {
   verificationTouchpoints: VerificationTouchpoint[];
   // 编译置信度；必须符合置信度校准规则
   confidence: number;
+  // catalog / compiler rule 命中 trace；用于证明 evidence requirements 不是 Agent 临场猜测
+  compilerTrace: PlanCompilerTrace;
   // 不确定点；confidence < 0.5 或语义有歧义时必填
   uncertainties?: string[];
   // 人工 review 检查项
@@ -1603,12 +1859,16 @@ Plan-build skill 必须遵守以下约束：
 
 - 只能使用 `runtimeContext.authorizedTools` 中声明的工具，不能编造工具。
 - 只能使用 `runtimeContext.evidenceChannels` 中声明的证据通道，不能编造信号。
+- 每个 executable `EvidenceRequirement.selector` 必须来自 `EvidenceCatalogEntry.selector`，不能由 Agent 临场生成。
 - 每个 ReAct step 必须有单一明确的 `intent`、`instanceSelector`、至少一个 `required` evidence requirement、类型化 `EvidenceSelector`、`interpretationHints` 和 `blockWhen`。
 - `intent` 表达 step 要达成什么；`actions` 只是建议工具序列，Agent 执行时可以调整，但不能偏离 `intent`。
 - `interpretationHints` 必须使用 `InterpretationHint` 结构，并区分 `direct`、`indirect` 和 `corroborating` 证据。
 - 每个验证触点必须有因果链：触发动作、预期状态变化、可观测通道和支撑理由。
 - 如果证据只能间接支持语义结论，必须声明不可观测风险，不能把间接证据写成直接证明。
 - 如果缺少关键工具、关键 evidence channel 或 selector 无法具体化，必须写入 `uncertainties`，不得硬编 selector。
+- 如果 semanticGoal 或 requires 找不到 catalog/rule 命中，必须写入 `compilerTrace.catalogMisses`，把 `confidence` 降到 `< 0.5`，并提示补 catalog、补 rule 或人工确认意图。
+- `compilerTrace.requirementSources` 必须一一记录每个 requirement 来自哪个 catalog entry 和版本。
+- `PlanCompilerRule.exactMatchRequired === true` 时，关键词弱匹配不得生成 required evidence；弱匹配只能作为候选和人工 review 输入。
 - 有 L2 历史口径时，优先复用历史 touchpoints；新 plan 偏离历史模式时必须标记偏差并降低 confidence。
 - 如果 `semanticGoal` 可以有多种合理解释，必须输出全部候选 touchpoint 解释，`confidence` 自动降至 `< 0.5`，写入 `uncertainties: ["语义目标存在歧义，需要人工确认意图"]`，不得选择其中一种继续编译。
 
@@ -1622,7 +1882,8 @@ Plan-build skill 必须遵守以下约束：
 Plan-build skill 的质量自检分为两类：
 
 - 结构性检查：所有工具来自 `authorizedTools`；所有 channel 来自 `EvidenceChannel`；每个 step 有 `instanceSelector`；每个 step 至少有一个 required evidence；每个 touchpoint 有因果链；每个 step 有 `blockWhen`；所有 selector 符合 `EvidenceSelector` 类型；graph 有合法终态路径且没有孤立节点。
-- 语义性检查：`semanticGoal` 的所有关键行为都有 touchpoint 覆盖；直接/间接证据已区分；不可观测风险已声明；历史 L2 偏差已标记；置信度有校准依据；歧义已标记为 uncertainty。
+- 结构性检查还必须确认所有 selector 都能通过 `compilerTrace.requirementSources` 追溯到 catalog entry。
+- 语义性检查：`semanticGoal` 的所有关键行为都有 touchpoint 覆盖；直接/间接证据已区分；不可观测风险已声明；历史 L2 偏差已标记；catalog miss 已标记；置信度有校准依据；歧义已标记为 uncertainty。
 
 约束对照总结如下：
 
@@ -1642,6 +1903,12 @@ Plan-build skill 的质量自检分为两类：
 | 12 | L2 历史口径优先复用，偏离历史必须标记 | 历史 L2 规则、语义性检查 |
 | 13 | L2 完全匹配时 `confidence` 可为 `0.9+`，且 `uncertainties` 应为空 | 历史 L2 规则、置信度校准 |
 | 14 | 语义目标有歧义时必须降置信度并阻断编译，不能任选一种继续 | 语义歧义规则、语义性检查、禁止事项 |
+
+Catalog 额外门禁：
+
+- selector 必须来自 Evidence Catalog，不能从自然语言临场生成。
+- compiler rule 只负责匹配和组装 catalog entries，不允许包含运行时代码或自然语言 selector。
+- catalog miss 必须进入 `compilerTrace.catalogMisses`、`uncertainties` 和 `reviewChecklist`。
 
 #### ValidatorAsset Plan Build Skill 原文
 
@@ -1683,11 +1950,14 @@ RuntimeExecutionPlan（执行层）
 
 你会收到一个 `ContextBundle`，其中可能包含：
 
-- `ValidatorAsset.semanticGoal`
+- `ValidatorAsset.semantic_goal`，进入 compiler 后归一化为 `PlanCompilerInput.semanticGoal`
+- `ValidatorAsset.requires`
 - `ValidatorAsset.executionSteps`
 - `ValidatorAsset.bdd_refs`
 - L1 资产：架构约束、业务边界、不可违反的工程约束
 - L2 资产：历史验证口径、历史证据模式、已人工确认记录
+- Evidence Catalog：可复用的 touchpoint、selector 和 interpretation hints
+- Plan Compiler Rule Set：从 semanticGoal / requires 到 catalog entries 的匹配规则
 - `runtimeContext.authorizedTools`
 - `runtimeContext.evidenceChannels`
 - 目标平台、目标设备、App 版本、SDK 版本、环境配置
@@ -1705,6 +1975,7 @@ type PlanBuildOutput = {
   semanticInterpretation: string;
   verificationTouchpoints: VerificationTouchpoint[];
   confidence: number;
+  compilerTrace: PlanCompilerTrace;
   uncertainties?: string[];
   reviewChecklist?: Array<{
     question: string;
@@ -1720,6 +1991,7 @@ type PlanBuildOutput = {
 - `semanticInterpretation`：你对语义目标的理解摘要，供审计和人工 review
 - `verificationTouchpoints`：识别出的验证触点列表，供人工快速判断 plan 是否覆盖真正目标
 - `confidence`：编译置信度，必须符合置信度校准规则
+- `compilerTrace`：catalog / compiler rule 命中记录，用于证明 selector 不是临场猜测
 - `uncertainties`：不确定点；低置信度或语义歧义时必填
 - `reviewChecklist`：人工 review 时应该确认的问题
 
@@ -1730,6 +2002,9 @@ Runtime 执行阶段只负责动作执行和可信证据采集。
 Runtime 不在每个 step 内做语义 pass/fail 判断。
 Runtime 不把自然语言目标转换成固定化程序 assert。
 Runtime 只判断证据是否可信采集到。
+
+Plan-build 不能从自然语言目标直接编造 selector。
+所有 executable evidence selector 必须来自 Evidence Catalog。
 
 语义判断发生在执行结束后：
 
@@ -1808,6 +2083,7 @@ Agent 执行时可以调整 `actions`，但不能偏离 `intent`。
 - `instanceSelector`
 
 `selector` 必须符合 `EvidenceSelector` 类型。
+`selector` 必须能追溯到 `EvidenceCatalogEntry.catalogEntryId`。
 
 禁止：
 
@@ -1818,6 +2094,35 @@ Agent 执行时可以调整 `actions`，但不能偏离 `intent`。
 
 如果 selector 无法具体化，必须写入 `uncertainties`。
 不能硬编 selector。
+
+### 规则四补充：先查 Catalog，再组装 EvidenceRequirement
+
+编译 evidence requirements 时必须按以下顺序：
+
+1. 用 `validationFactIds` 和 `bddRefs` 精确匹配 `PlanCompilerRule`。
+2. 用 `requires` 和 `semanticGoal` 的关键词弱匹配 `PlanCompilerRule`。
+3. 按 `priority`、`matchScore` 和 `exactMatchRequired` 过滤 rule。
+4. 如果 `exactMatchRequired === true`，必须命中 `validationFactIds` 或 `bddRefs`，不能只靠关键词弱匹配。
+5. 从命中的 rule 中读取 `catalogEntryIds`。
+6. 从 `EvidenceCatalogEntry` 生成 normalized `EvidenceRequirement`。
+7. 把命中的 rule、catalog entry、生成的 requirement ID 和 requirement source 一一写入 `compilerTrace`。
+
+关键词弱匹配只能作为低置信候选。除非 `matchScore >= minMatchScore` 且没有更高优先级的精确匹配冲突，否则不能由弱匹配生成 required evidence。
+
+`compilerTrace.requirementSources` 必须记录：
+
+- `requirementId`
+- `catalogEntryId`
+- `catalogEntryVersion`
+- `selectorHash`
+
+如果没有命中 rule 或 catalog entry：
+
+- 不得继续编造 selector
+- 必须写入 `compilerTrace.catalogMisses`
+- `confidence` 必须降至 `< 0.5`
+- 必须写入 `uncertainties`
+- 必须在 `reviewChecklist` 中提示补 catalog、补 rule 或人工确认语义
 
 ### 规则五：步骤间依赖必须显式
 
@@ -1928,6 +2233,8 @@ Plan-build Skill 不直接决定本次 run 是否最终通过。
 - 每个 step 至少有一个 required `EvidenceRequirement`
 - 每个 touchpoint 有因果链
 - 所有 selector 符合 `EvidenceSelector` 类型
+- 所有 executable selector 都能追溯到 Evidence Catalog
+- `compilerTrace` 记录了 matched rules、matchScore、selected catalog entries、generated requirement IDs 和 requirementSources
 - graph 有合法终态路径
 - 没有孤立节点
 
@@ -1937,6 +2244,7 @@ Plan-build Skill 不直接决定本次 run 是否最终通过。
 - 直接证据、间接证据、佐证证据已经区分
 - 不可观测风险已经声明
 - L2 历史偏差已经标记
+- catalog miss 已经标记
 - 置信度有校准依据
 - 语义歧义已经标记为 uncertainty
 - 每个 reviewChecklist 问题都能关联到 touchpoint 或 evidence requirement
@@ -1948,6 +2256,7 @@ Plan-build Skill 不直接决定本次 run 是否最终通过。
 禁止编造工具。
 禁止编造 evidence channel。
 禁止编造 selector。
+禁止把不在 Evidence Catalog 中的 selector 写入 executable `RuntimeExecutionPlan`。
 禁止用 Agent 自评替代 required evidence。
 禁止把传统 pass/fail assert 写进 Runtime step。
 禁止在语义目标有歧义时选择其中一种继续编译。
@@ -1966,7 +2275,7 @@ Agent 在 run 内响应三类事件：
 
 证据产出后，agent 检查证据是否充分、结果解释是否成立、失败是否可能来自环境或不稳定因素，并生成反馈。
 
-agent review 可以建议补采证据、重新执行 ReAct step、停止 run 或提示人工介入，但这些建议仍必须通过 AppPilot runtime 记录，并进入人工确认流程。Agent 的检查反馈不能替代人工确认。
+agent review 可以建议补采证据、重新执行 ReAct step、停止 run 或提示人工介入，但这些建议仍必须通过 AppPilot runtime 记录，并进入确认门禁流程。Agent 的检查反馈不能替代 bootstrap 阶段的人工确认，也不能替代更高 maturityLevel 下的 confirmation policy。
 
 ### 4.6 恢复规则
 
@@ -2218,7 +2527,7 @@ type AgentHumanPrompt = {
 
 ReAct 执行层负责执行 `RuntimeExecutionStep.kind: "react_task"` 的步骤。每个 ReAct step 都是一个任务目标，Agent 在 Runtime 授权的原子工具内执行 `Reasoning -> Acting -> Observing` 循环，自主决定动作和调整策略，直到提交当前 step 的证据、主动声明 blocked，或达到预算 / 超时退出态。
 
-ReAct 内部 observation 不写入 Run Event Bus。找不到按钮、坐标不准、工具返回空、单次工具调用错误、verification feedback 都只是 ReAct 循环的 observation，由 Agent 在下一轮继续调整策略。
+ReAct 内部 observation 不写入 Run Event Bus。找不到按钮、坐标不准、工具返回空、单次工具调用错误、evidence feedback 都只是 ReAct 循环的 observation，由 Agent 在下一轮继续调整策略。
 
 Run Event Bus 只承载 step 级、系统级和外部输入级事件。ReAct step 超时、被阻塞、证据不足或证据可信采集完成时，Runtime 才发布 step 级事件。
 
@@ -2669,7 +2978,7 @@ type ValidationTaskState =
   | "react_executing"
   // Agent 正在检查证据并生成反馈
   | "agent_reviewing"
-  // 等待 agent 反馈或人工确认提示落盘
+  // 等待 agent 反馈或确认门禁提示落盘
   | "waiting_agent_feedback"
   // 等待外部 artifact、设备或工具结果
   | "waiting_artifacts"
@@ -2681,15 +2990,15 @@ type ValidationTaskState =
   | "extracting_evidence"
   // 正在生成 ExecutionFact
   | "building_execution_facts"
-  // 等待人工确认执行结果
+  // 等待确认门禁处理执行结果
   | "waiting_result_confirmation"
-  // 执行结果已确认
+  // 执行结果已通过确认门禁
   | "result_confirmed"
   // 等待是否生成写回材料的决策
   | "waiting_backflow_decision"
   // 正在生成 ValidatorAssetGenerationMaterial
   | "building_validator_asset_material"
-  // 等待人工确认生成材料
+  // 等待确认门禁处理生成材料
   | "waiting_material_confirmation"
   // 正在生成 ValidationWritebackPackage
   | "generating_writeback_package"
@@ -3073,6 +3382,10 @@ type DbRuntimePlanCacheRecord = {
   planSchemaVersion: string;
   // AppPilot compiler 版本
   compilerVersion: string;
+  // Evidence Catalog hash
+  evidenceCatalogHash: string;
+  // Plan compiler rule set hash
+  compilerRuleSetHash: string;
   // 目标环境签名 hash
   targetSignatureHash: string;
   // step graph skeleton hash
@@ -3084,7 +3397,7 @@ type DbRuntimePlanCacheRecord = {
   // 是否允许直接复用
   reusable: boolean;
   // 失效原因；reusable 为 false 时填写
-  invalidationReason?: "asset_changed" | "compiler_changed" | "schema_changed" | "target_changed" | "manual_invalidated";
+  invalidationReason?: "asset_changed" | "compiler_changed" | "catalog_changed" | "compiler_rule_changed" | "schema_changed" | "target_changed" | "manual_invalidated";
   // 计划生成时间
   generatedAt: string;
   // 最近命中时间
@@ -3322,7 +3635,7 @@ type LocalRunSummary = {
 - 默认情况下，一个设备或一个 Editor 会话对应一个 `ValidationInstance`。
 - 显式 `instances` 只用于指定设备、模拟器、required、控制配置和启动参数覆盖，不用于表达场景拆分。
 - Runtime Step Graph 不表达并行节点。多设备执行仍由 `ValidationInstance` 层支持；graph 节点引用的 step 通过 `scope` 声明作用于单个 instance、全部 instance 或 run 级聚合。
-- run 级 step 可以汇总多个 instance 的 evidence、对比 A/B 设备数据、生成 `RunAggregationResult`、等待人工确认，或判断是否进入写回材料生成。
+- run 级 step 可以汇总多个 instance 的 evidence、对比 A/B 设备数据、生成 `RunAggregationResult`、等待确认门禁，或判断是否进入写回材料生成。
 - run 级 `ExecutionResult` 不是某个设备的原始结果，而是 `RunAggregationResult` 的摘要。
 - 写回材料必须保留参与确认的 `instanceIds` 和 `evidenceInstanceIds`，不得把未确认实例纳入确认范围。
 
@@ -4123,8 +4436,8 @@ type InternalMcpTool =
         instanceId?: string;
         // 证据通道
         channel: EvidenceChannel;
-        // 证据选择器
-        selector?: string;
+        // 类型化证据选择器；必须与 channel 匹配
+        selector: EvidenceSelector;
         // 关联 step ID
         stepId?: string;
       };
@@ -4246,7 +4559,7 @@ type InternalMcpTool =
         // 单次验证 run ID
         runId: string;
         // 审计类型
-        auditType: "agent" | "tool_call" | "event_processing" | "human_confirmation";
+        auditType: "agent" | "tool_call" | "event_processing" | "human_confirmation" | "auto_acceptance" | "acceptance";
         // 审计 payload 引用
         payloadRef?: string;
         // 小型审计摘要
@@ -4637,7 +4950,7 @@ type Diagnostic = {
 
 ### 14.1 存储边界
 
-Evidence Store 负责保存一次 run 的原始 artifact、结构化证据包、执行事实、人工确认材料和写回材料引用。SQLite 只保存状态、索引、checkpoint 和引用；大体积 artifact 正文保存在 run 级证据目录中。
+Evidence Store 负责保存一次 run 的原始 artifact、结构化证据包、执行事实、确认门禁材料和写回材料引用。SQLite 只保存状态、索引、checkpoint 和引用；大体积 artifact 正文保存在 run 级证据目录中。
 
 Evidence Store 采用 run 级目录结构。现有 `~/.apppilot/artifact` 可以继续作为 legacy artifact 目录或构建产物缓存；进入验证 run 后，所有证据都必须复制、链接或登记到对应 run 的 Evidence Store，并在 SQLite 中登记 artifact 引用。
 
@@ -4682,7 +4995,7 @@ Evidence Store 建议目录结构：
         build_artifact/
         agent_record/
         runtime_plan/
-        human_confirmation/
+        acceptance/
         writeback_material/
       exports/
         summary/
@@ -4704,7 +5017,7 @@ Evidence Store 建议目录结构：
 - `instances/<instanceId>/evidence/<channel>/`：instance 级原始证据目录。每个证据通道独立保存，避免多设备证据互相覆盖。
 - `instances/<instanceId>/bundles/`：该实例生成的 `EvidenceBundle`。
 - `instances/<instanceId>/facts/`：该实例生成的 `ExecutionFact`。
-- `run-evidence/`：run 级 artifact 目录，用于构建产物、agent 记录、runtime plan、人工确认和写回材料。
+- `run-evidence/`：run 级 artifact 目录，用于构建产物、agent 记录、runtime plan、确认门禁记录和写回材料。
 - `exports/`：对外导出目录。导出内容只能来自已登记 artifact、bundle、fact、确认记录和写回材料。
 - `redaction/`：脱敏规则和脱敏报告。原始 artifact 可以保留在内部目录中，对外导出必须引用脱敏结果或明确标记未脱敏。
 
@@ -4720,7 +5033,7 @@ Evidence Store 建议目录结构：
 
 - `summary` 导出只包含执行摘要、证据摘要、诊断摘要和稳定引用。
 - `evidence` 导出可以包含脱敏后的 artifact、EvidenceBundle 和 ExecutionFact。
-- `writeback_package` 导出必须包含人工确认引用，不得包含未确认写回材料。
+- `writeback_package` 导出必须包含 `AcceptanceRecord` 引用，不得包含未通过确认门禁的写回材料。
 - `local_run_summary` 只导出本机观察记录，不做权威覆盖判断。
 - 删除或清理 Evidence Store 前必须先确认没有未导出的写回材料、未完成确认提示或可恢复 checkpoint。
 
@@ -4819,7 +5132,7 @@ type RuntimeSafetyPolicy = {
 ### 15.2 执行与写回安全
 
 - AppPilot 只产出可供外部系统消费的材料，不直接写外部 consumption snapshot、published index 或资产治理状态。
-- 缺少 required human confirmation 或 auto-acceptance 记录时不得产出 `ValidationWritebackPackage`。Agent review 不能替代 bootstrap 阶段的人工确认；在更高 maturityLevel 下，Agent interpretation 只有满足确认策略和历史模式一致性门禁时才能生成 auto-acceptance 记录。
+- 缺少归一化 `AcceptanceRecord` 时不得产出 `ValidationWritebackPackage`。Agent review 不能替代 bootstrap 阶段的人工确认；在更高 maturityLevel 下，Agent interpretation 只有满足确认策略和历史模式一致性门禁时才能生成 auto-acceptance 源记录，并归一化为 `AcceptanceRecord`。
 - `RuntimeExecutionPlan`、`RuntimeExecutionStep` 和 `RuntimeStepGraphDefinition` 都是内部执行产物，不得原样写回为外部 `ValidatorAsset`。
 - SQLite 只保存任务状态、索引、checkpoint 和 artifact 引用；大体积 artifact 正文必须保存在 Evidence Store。阶段边界的任务状态、事件、checkpoint 和 artifact 引用必须在同一数据库事务中提交。
 - Agent 只能调用已授权的工具和参数；cancellation 只能阻止后续动作，不能删除已经写出的证据。
@@ -4834,7 +5147,7 @@ type RuntimeSafetyPolicy = {
 
 首次执行和 `bootstrap` 阶段必须人工确认，用来校准 Agent 解释标准。进入 `candidate`、`validated` 和 `stable` 后，人工确认频率递减；只有触发重新确认门禁或证据/解释不稳定时才强制人工确认。
 
-没有 required human confirmation 或 auto-acceptance 记录时，AppPilot 不应把本次 run 的结果包装为可写回材料。auto-acceptance 不是 Agent 自评，它必须引用证据、历史模式匹配结果、maturityLevel 和确认策略计算结果。
+没有归一化 `AcceptanceRecord` 时，AppPilot 不应把本次 run 的结果包装为可写回材料。auto-acceptance 不是 Agent 自评，它必须引用证据、历史模式匹配结果、maturityLevel 和确认策略计算结果，并生成可审计的 `AutoAcceptanceRecord`。
 
 确认记录必须落到 run 目录和本地状态数据库，作为后续审计、恢复和导出的依据。人工确认只覆盖确认记录声明的范围，AppPilot 不得从窄范围 run 推断更大范围已验证。
 
@@ -4905,6 +5218,34 @@ type ConfirmationGateResult = {
   reason: string;
 };
 
+// auto-acceptance 源记录；只有 confirmation policy 判定可自动接受时才允许生成
+type AutoAcceptanceRecord = {
+  // auto-acceptance 源记录 ID
+  autoAcceptanceId: string;
+  // 单次验证 run ID
+  runId: string;
+  // 本地任务 ID
+  taskId: string;
+  // 当前成熟度
+  maturityLevel: MaturityLevel;
+  // 策略计算结果
+  confirmationGateResult: ConfirmationGateResult;
+  // Agent run 级解释记录引用
+  agentInterpretationRef: string;
+  // 历史模式匹配记录引用
+  historicalPatternRef: string;
+  // 本次 auto-acceptance 覆盖范围
+  scope: HumanConfirmationScope;
+  // 支撑自动接受的证据引用
+  evidenceRefs: string[];
+  // 策略说明，必须可审计
+  reason: string;
+  // 生成时间
+  generatedAt: string;
+  // 源记录 artifact 引用
+  artifactRef: string;
+};
+
 // 人工确认覆盖范围
 type HumanConfirmationScope = {
   // 确认范围 ID
@@ -4972,6 +5313,8 @@ type HumanConfirmationRecord = {
 - `stable`：长期稳定且证据模式高度可预期；只在 App 版本变更、SDK 版本变更、历史通过率突然下降、证据模式漂移、Agent 解释变化或人工标记时触发人工确认。
 
 重新确认触发器是自动化机制的安全阀。任何 maturityLevel 下，只要 `ConfirmationGateResult.triggers` 非空并且策略要求重新确认，AppPilot 都必须生成人工确认提示；不能仅凭 Agent interpretation 自动写回。
+
+`HumanConfirmationRecord` 和 `AutoAcceptanceRecord` 都只是源记录。AppPilot 只有把其中一种源记录归一化为 `AcceptanceRecord` 后，才允许生成 `ValidatorAssetGenerationMaterial` 或 `ValidationWritebackPackage`。`bootstrap` 阶段不得生成 `AutoAcceptanceRecord`；`candidate`、`validated` 和 `stable` 阶段只有 `ConfirmationGateResult.required === false` 且 `autoAcceptanceAllowed === true` 时才允许生成 `AutoAcceptanceRecord`。
 
 `external.confirmation.submit` 的 `result` 直接写入 `HumanConfirmationRecord.decision`。不同 `confirmationType` 允许的 `result` 取值固定如下：
 
@@ -5048,8 +5391,8 @@ type AppPilotError = {
 
 - 原始 `ValidatorAsset` 和 run options 快照。
 - `ValidatorAsset` 正文或解析后的 `validatorAssetRef`。
-- Agent 控制配置、Agent 会话、Agent 计划、Agent 检查反馈和人工确认提示。
-- ReAct 每轮 `ReactIterationRecord`，包括 `reasoningSummary`、action、observation、verification feedback 和 artifact 引用。
+- Agent 控制配置、Agent 会话、Agent 计划、Agent 检查反馈、人工确认提示和 auto-acceptance 记录。
+- ReAct 每轮 `ReactIterationRecord`，包括 `reasoningSummary`、action、observation、evidence feedback 和 artifact 引用。
 - 本地 SQLite 数据库中的 run 记录、事件记录、checkpoint 记录、artifact 引用和恢复记录。
 - 多实例 run 的 `ValidationInstance`、`EvidenceInstance` 和 `RunAggregationResult`。
 - 构建产物引用。
@@ -5058,7 +5401,7 @@ type AppPilotError = {
 - 原始 artifacts 和 content hash。
 - extractor 输出。
 - `ExecutionFact`。
-- 人工确认记录。
+- 确认门禁记录，包括 `HumanConfirmationRecord`、`AutoAcceptanceRecord` 和归一化后的 `AcceptanceRecord`。
 - 写回材料包。
 
 ### 17.2 重放要求
