@@ -1,4 +1,0 @@
-interface:
-  display_name: "AppPilot"
-  short_description: "Agent-driven mobile build, verify, and action harness."
-  default_prompt: "Use ~/.apppilot/apppilot-mcp-call to build, run, act on, and verify a mobile app."
