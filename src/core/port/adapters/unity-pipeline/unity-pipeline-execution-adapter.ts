@@ -20,8 +20,6 @@ import type { UnityPipelinePlatformExecutor } from "./unity-pipeline-platform-ex
 /** Identifies and dispatches platform work backed by Unity Pipeline. */
 export class UnityPipelineExecutionAdapter implements AppPilotAdapter {
   readonly transport = "unity-pipeline";
-  private activeExecutor?: UnityPipelinePlatformExecutor;
-  private activeIdentity?: AppPilotIdentity;
 
   constructor(
     private readonly executors: readonly UnityPipelinePlatformExecutor[] = [
@@ -30,7 +28,6 @@ export class UnityPipelineExecutionAdapter implements AppPilotAdapter {
   ) {}
 
   async handshake(): Promise<AdapterHandshakeResult> {
-    this.invalidateDiscovery();
     const connected: Array<{
       executor: UnityPipelinePlatformExecutor;
       identity: AppPilotIdentity;
@@ -49,75 +46,63 @@ export class UnityPipelineExecutionAdapter implements AppPilotAdapter {
         message: "Exactly one execution platform is required.",
       };
     }
-    const selected = connected[0]!;
-    this.activeExecutor = selected.executor;
-    this.activeIdentity = selected.identity;
-    return { status: "connected", identity: selected.identity };
+    return { status: "connected", identity: connected[0]!.identity };
   }
 
-  install(_: InstallRequest): Promise<AppPilotResult<void>> {
-    return this.unsupported("install");
+  install(request: InstallRequest): Promise<AppPilotResult<void>> {
+    return this.unsupported("install", request.identity);
   }
 
-  uninstall(_: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.unsupported("uninstall");
+  uninstall(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    return this.unsupported("uninstall", request.identity);
   }
 
-  launch(_: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withExecutor((executor, identity) => executor.start(identity));
+  launch(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    return this.withExecutor(request.identity, (executor) => executor.start(request.identity));
   }
 
-  restart(_: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withExecutor(async (executor, identity) => {
-      const stopped = await executor.stop(identity);
-      return stopped.ok ? executor.start(identity) : stopped;
+  restart(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    return this.withExecutor(request.identity, async (executor) => {
+      const stopped = await executor.stop(request.identity);
+      return stopped.ok ? executor.start(request.identity) : stopped;
     });
   }
 
-  shutdown(_: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withExecutor((executor, identity) => executor.stop(identity));
+  shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    return this.withExecutor(request.identity, (executor) => executor.stop(request.identity));
   }
 
-  tap(_: PointRequest): Promise<AppPilotResult<void>> {
-    return this.unsupported("tap");
+  tap(request: PointRequest): Promise<AppPilotResult<void>> {
+    return this.unsupported("tap", request.identity);
   }
 
-  swipe(_: SwipeRequest): Promise<AppPilotResult<void>> {
-    return this.unsupported("swipe");
+  swipe(request: SwipeRequest): Promise<AppPilotResult<void>> {
+    return this.unsupported("swipe", request.identity);
   }
 
-  logs(_: LogsRequest): Promise<AppPilotResult<LogsResult>> {
-    return this.unsupported("logs");
-  }
-
-  invalidateDiscovery(): void {
-    this.activeExecutor = undefined;
-    this.activeIdentity = undefined;
+  logs(request: LogsRequest): Promise<AppPilotResult<LogsResult>> {
+    return this.unsupported("logs", request.identity);
   }
 
   private async withExecutor<T>(
-    operation: (
-      executor: UnityPipelinePlatformExecutor,
-      identity: AppPilotIdentity,
-    ) => Promise<AppPilotResult<T>>,
+    identity: AppPilotIdentity,
+    operation: (executor: UnityPipelinePlatformExecutor) => Promise<AppPilotResult<T>>,
   ): Promise<AppPilotResult<T>> {
-    if (!this.activeExecutor || !this.activeIdentity) return this.notDiscovered();
-    const result = await operation(this.activeExecutor, this.activeIdentity);
-    if (!result.ok && result.requiresIdentify) this.invalidateDiscovery();
-    return result;
+    if (identity.transport !== this.transport) return this.notDiscovered(identity);
+    const executor = this.executors.find((candidate) => candidate.platformType === identity.platform.type);
+    return executor ? operation(executor) : this.notDiscovered(identity);
   }
 
-  private unsupported<T>(operation: string): Promise<AppPilotResult<T>> {
-    return Promise.resolve(this.activeIdentity
-      ? operationUnsupported(operation, this.activeIdentity)
-      : this.notDiscovered());
+  private unsupported<T>(operation: string, identity: AppPilotIdentity): Promise<AppPilotResult<T>> {
+    return Promise.resolve(operationUnsupported(operation, identity));
   }
 
-  private notDiscovered(): AppPilotFailure {
+  private notDiscovered(identity: AppPilotIdentity): AppPilotFailure {
     return {
       ok: false,
-      code: "execution_not_discovered",
-      message: `Transport ${this.transport} has no discovered executor. Call identify first.`,
+      code: "execution_selection_unavailable",
+      message: `Transport ${identity.transport} does not implement platform ${identity.platform.type}. Call identify again.`,
+      requiresIdentify: true,
     };
   }
 }

@@ -12,5 +12,4 @@ export type AdapterHandshakeResult =
 export interface AppPilotAdapter extends AppPilotRuntimePort {
   readonly transport: string;
   handshake(): Promise<AdapterHandshakeResult>;
-  invalidateDiscovery(): void;
 }

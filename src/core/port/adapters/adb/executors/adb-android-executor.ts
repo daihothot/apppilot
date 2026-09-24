@@ -5,6 +5,7 @@ import type {
   AppPilotResult,
   AppTargetRequest,
   InstallRequest,
+  LaunchRequest,
   LogsRequest,
   LogsResult,
   PointRequest,
@@ -37,6 +38,15 @@ export class AdbAndroidExecutor {
   async handshake(): Promise<AdbExecutorHandshakeResult> {
     const discovered = await this.discoverTarget();
     if (discovered.status !== "connected") return discovered;
+    const targetId = discovered.target.id;
+    const prepared = await this.prepareTarget(targetId);
+    if (!prepared.ok) {
+      return {
+        status: "failed",
+        code: prepared.code,
+        message: prepared.message,
+      };
+    }
     return {
       status: "connected",
       identity: {
@@ -44,6 +54,40 @@ export class AdbAndroidExecutor {
         platform: { type: this.platform, version: discovered.target.version },
       },
     };
+  }
+
+  private async prepareTarget(targetId: string): Promise<AppPilotResult<void>> {
+    const wakeUp = await this.transport.execute([
+      "-s", targetId, "shell", "input", "keyevent", "KEYCODE_WAKEUP",
+    ]);
+    if (wakeUp.exitCode !== 0) {
+      return failure(
+        "android_wakeup_failed",
+        wakeUp.stderr.trim() || wakeUp.stdout.trim() || "Failed to wake the Android device.",
+      );
+    }
+    const windowState = await this.transport.execute(["-s", targetId, "shell", "dumpsys", "window"]);
+    if (windowState.exitCode !== 0) {
+      return failure(
+        "android_lock_state_failed",
+        windowState.stderr.trim() || windowState.stdout.trim() || "Failed to inspect the Android lock state.",
+      );
+    }
+    if (
+      windowState.stdout.includes("mDreamingLockscreen=true")
+      || windowState.stdout.includes("mShowingLockscreen=true")
+    ) {
+      const unlock = await this.transport.execute([
+        "-s", targetId, "shell", "input", "swipe", "500", "1800", "500", "500", "300",
+      ]);
+      if (unlock.exitCode !== 0) {
+        return failure(
+          "android_unlock_failed",
+          unlock.stderr.trim() || unlock.stdout.trim() || "Failed to unlock the Android device.",
+        );
+      }
+    }
+    return { ok: true, value: undefined };
   }
 
   async install(identity: AppPilotIdentity, request: InstallRequest): Promise<AppPilotResult<void>> {
@@ -62,13 +106,61 @@ export class AdbAndroidExecutor {
       ? this.command(["-s", target.value, "uninstall", appId.value], "android_uninstall_failed")
       : target;
   }
-  async launch(identity: AppPilotIdentity, request: AppTargetRequest): Promise<AppPilotResult<void>> {
+  async launch(identity: AppPilotIdentity, request: LaunchRequest): Promise<AppPilotResult<void>> {
     const appId = stringArgument(request.appId, "appId");
     if (!appId.ok) return appId;
+    const parameterEntries = Object.entries(request.parameters ?? {});
+    for (const [key, value] of parameterEntries) {
+      if (!key.trim()) return invalidArgument("parameters", "contains an empty key");
+      if (typeof value !== "string") {
+        return invalidArgument(`parameters.${key}`, "must be a string");
+      }
+    }
     const target = await this.requireTarget(identity);
-    return target.ok
-      ? this.command(["-s", target.value, "shell", "monkey", "-p", appId.value, "1"], "android_launch_failed")
-      : target;
+    if (!target.ok) return target;
+    const prepared = await this.prepareTarget(target.value);
+    if (!prepared.ok) return prepared;
+    if (parameterEntries.length === 0) {
+      return this.command(
+        ["-s", target.value, "shell", "monkey", "-p", appId.value, "1"],
+        "android_launch_failed",
+      );
+    }
+    const resolved = await this.transport.execute([
+      "-s",
+      target.value,
+      "shell",
+      "cmd",
+      "package",
+      "resolve-activity",
+      "--brief",
+      "-a",
+      "android.intent.action.MAIN",
+      "-c",
+      "android.intent.category.LAUNCHER",
+      appId.value,
+    ]);
+    const component = resolved.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.includes("/"))
+      .at(-1);
+    if (resolved.exitCode !== 0 || !component) {
+      return failure(
+        "android_launch_failed",
+        resolved.stderr.trim() || `No launcher activity was found for ${appId.value}.`,
+      );
+    }
+    return this.command([
+      "-s",
+      target.value,
+      "shell",
+      "am",
+      "start",
+      "-n",
+      component,
+      ...parameterEntries.flatMap(([key, value]) => ["--es", key, value]),
+    ], "android_launch_failed");
   }
   async shutdown(identity: AppPilotIdentity, request: AppTargetRequest): Promise<AppPilotResult<void>> {
     const appId = stringArgument(request.appId, "appId");

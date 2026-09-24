@@ -13,6 +13,7 @@ import type {
   BuildRequest,
   IdentifyRequest,
   InstallRequest,
+  LaunchRequest,
   LogsRequest,
   LogsResult,
   PointRequest,
@@ -35,40 +36,37 @@ export class AppPilotPort implements AppPilotOperationPort {
     return this.builds.build(request);
   }
   install(request: InstallRequest): Promise<AppPilotResult<void>> {
-    return this.withAdapter((adapter) => adapter.install(request));
+    return this.withAdapter(request.identity, (adapter) => adapter.install(request));
   }
   uninstall(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withAdapter((adapter) => adapter.uninstall(request));
+    return this.withAdapter(request.identity, (adapter) => adapter.uninstall(request));
   }
-  launch(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withAdapter((adapter) => adapter.launch(request));
+  launch(request: LaunchRequest): Promise<AppPilotResult<void>> {
+    return this.withAdapter(request.identity, (adapter) => adapter.launch(request));
   }
-  restart(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withAdapter((adapter) => adapter.restart(request));
+  restart(request: LaunchRequest): Promise<AppPilotResult<void>> {
+    return this.withAdapter(request.identity, (adapter) => adapter.restart(request));
   }
   shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withAdapter((adapter) => adapter.shutdown(request));
+    return this.withAdapter(request.identity, (adapter) => adapter.shutdown(request));
   }
   tap(request: PointRequest): Promise<AppPilotResult<void>> {
-    return this.withAdapter((adapter) => adapter.tap(request));
+    return this.withAdapter(request.identity, (adapter) => adapter.tap(request));
   }
   swipe(request: SwipeRequest): Promise<AppPilotResult<void>> {
-    return this.withAdapter((adapter) => adapter.swipe(request));
+    return this.withAdapter(request.identity, (adapter) => adapter.swipe(request));
   }
   logs(request: LogsRequest): Promise<AppPilotResult<LogsResult>> {
-    return this.withAdapter((adapter) => adapter.logs(request));
+    return this.withAdapter(request.identity, (adapter) => adapter.logs(request));
   }
 
   private async withAdapter<T>(
+    identity: AppPilotIdentity,
     operation: (adapter: AppPilotAdapter) => Promise<AppPilotResult<T>>,
   ): Promise<AppPilotResult<T>> {
-    const selected = this.registry.current();
+    const selected = this.registry.resolve(identity);
     if (!selected.ok) return selected;
-    const result = await operation(selected.value);
-    if (!result.ok && result.requiresIdentify) {
-      this.registry.invalidate(selected.value);
-    }
-    return result;
+    return operation(selected.value);
   }
 }
 

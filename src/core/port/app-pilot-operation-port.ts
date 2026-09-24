@@ -37,20 +37,28 @@ export interface BuildArtifact {
   appId: string;
 }
 
-export interface AppTargetRequest {
+export interface AppPilotExecutionRequest {
+  identity: AppPilotIdentity;
+}
+
+export interface AppTargetRequest extends AppPilotExecutionRequest {
   appId?: string;
+}
+
+export interface LaunchRequest extends AppTargetRequest {
+  parameters?: Readonly<Record<string, string>>;
 }
 
 export interface InstallRequest extends AppTargetRequest {
   artifactPath?: string;
 }
 
-export interface PointRequest {
+export interface PointRequest extends AppPilotExecutionRequest {
   x?: number;
   y?: number;
 }
 
-export interface SwipeRequest {
+export interface SwipeRequest extends AppPilotExecutionRequest {
   fromX?: number;
   fromY?: number;
   toX?: number;
@@ -72,8 +80,8 @@ export interface LogsResult {
 export interface AppPilotRuntimePort {
   install(request: InstallRequest): Promise<AppPilotResult<void>>;
   uninstall(request: AppTargetRequest): Promise<AppPilotResult<void>>;
-  launch(request: AppTargetRequest): Promise<AppPilotResult<void>>;
-  restart(request: AppTargetRequest): Promise<AppPilotResult<void>>;
+  launch(request: LaunchRequest): Promise<AppPilotResult<void>>;
+  restart(request: LaunchRequest): Promise<AppPilotResult<void>>;
   shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>>;
   tap(request: PointRequest): Promise<AppPilotResult<void>>;
   swipe(request: SwipeRequest): Promise<AppPilotResult<void>>;

@@ -61,7 +61,6 @@ function fakeAdapter(
   return {
     transport,
     handshake: async () => { calls.push(transport); return result; },
-    invalidateDiscovery: () => undefined,
     install: async () => ok(),
     uninstall: async () => ok(),
     launch: async () => ok(),

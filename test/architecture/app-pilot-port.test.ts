@@ -7,7 +7,7 @@ import { AppPilotPort } from "../../src/core/port/app-pilot-port.ts";
 
 const identity: AppPilotIdentity = { transport: "fake", platform: { type: "android", version: "16" } };
 
-test("runtime semantics require explicit discovery and reuse the selected adapter", async () => {
+test("runtime semantics route every explicit identity without cached discovery", async () => {
   const calls: string[] = [];
   const adapter = fakeAdapter(calls);
   const port = new AppPilotPort(
@@ -15,18 +15,14 @@ test("runtime semantics require explicit discovery and reuse the selected adapte
     new PlatformBuildRegistry([]),
   );
 
-  expect(await port.install({ appId: "app", artifactPath: "/app.apk" })).toEqual({
-    ok: false,
-    code: "execution_not_discovered",
-    message: "No execution target is discovered. Call identify first.",
-  });
+  await port.install({ identity, appId: "app", artifactPath: "/app.apk" });
+  await port.restart({ identity, appId: "app" });
+  expect(calls).toEqual(["install", "restart"]);
   expect(await port.identify({})).toEqual({ ok: true, value: identity });
-  await port.install({ appId: "app", artifactPath: "/app.apk" });
-  await port.restart({ appId: "app" });
-  expect(calls).toEqual(["handshake", "install", "restart"]);
+  expect(calls).toEqual(["install", "restart", "handshake"]);
 });
 
-test("an unavailable cached adapter requires external discovery again", async () => {
+test("an unavailable identity does not create or invalidate AppPilot state", async () => {
   const adapter = fakeAdapter([]);
   adapter.launch = async () => ({
     ok: false,
@@ -39,14 +35,13 @@ test("an unavailable cached adapter requires external discovery again", async ()
     new PlatformBuildRegistry([]),
   );
 
-  await port.identify({});
-  expect(await port.launch({ appId: "app" })).toMatchObject({
+  expect(await port.launch({ identity, appId: "app" })).toMatchObject({
     ok: false,
     code: "execution_selection_unavailable",
   });
-  expect(await port.launch({ appId: "app" })).toMatchObject({
+  expect(await port.launch({ identity, appId: "app" })).toMatchObject({
     ok: false,
-    code: "execution_not_discovered",
+    code: "execution_selection_unavailable",
   });
 });
 
@@ -69,7 +64,6 @@ function fakeAdapter(calls: string[]): AppPilotAdapter {
   return {
     transport: "fake",
     handshake: async () => { calls.push("handshake"); return { status: "connected", identity }; },
-    invalidateDiscovery: () => undefined,
     install: async () => { calls.push("install"); return ok(); },
     uninstall: ok,
     launch: ok,

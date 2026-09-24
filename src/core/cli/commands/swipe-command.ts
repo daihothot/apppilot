@@ -1,5 +1,5 @@
 import type { AppPilotOperationPort } from "../../port/app-pilot-operation-port.ts";
-import { readNumberOption } from "../args.ts";
+import { readIdentityOption, readNumberOption } from "../args.ts";
 import type { AppPilotCommand } from "./app-pilot-command.ts";
 import { invokeOperation } from "./operation-command.ts";
 
@@ -8,6 +8,7 @@ export class SwipeCommand implements AppPilotCommand {
 
   invoke(args: string[]): Promise<object> {
     return invokeOperation(args, () => this.operationPort.swipe({
+      identity: readIdentityOption(args),
       fromX: readNumberOption(args, "--from-x"),
       fromY: readNumberOption(args, "--from-y"),
       toX: readNumberOption(args, "--to-x"),

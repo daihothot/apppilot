@@ -19,10 +19,10 @@ function helpText(): string {
 
   apppilot identify [--transport unity-pipeline|adb]
   apppilot build --platform ios|android --project-path <PATH> --output-path <PATH>
-  apppilot install --app-id <ID> --artifact-path <PATH>
-  apppilot uninstall|launch|restart|shutdown --app-id <ID>
-  apppilot tap|swipe ...
-  apppilot logs --app-id <ID> --output-path <PATH>
+  apppilot install --identity <JSON> --app-id <ID> --artifact-path <PATH>
+  apppilot uninstall|launch|restart|shutdown --identity <JSON> --app-id <ID>
+  apppilot tap|swipe --identity <JSON> ...
+  apppilot logs --identity <JSON> --app-id <ID> --output-path <PATH>
   apppilot setup --ios|--plugin|--all
   apppilot log clear
 `;

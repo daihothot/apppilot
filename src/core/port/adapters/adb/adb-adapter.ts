@@ -1,8 +1,8 @@
 import type {
-  AppPilotIdentity,
   AppPilotResult,
   AppTargetRequest,
   InstallRequest,
+  LaunchRequest,
   LogsRequest,
   LogsResult,
   PointRequest,
@@ -15,69 +15,48 @@ import { AdbTransport } from "./adb-transport.ts";
 /** ADB owns the Android executor used to implement AppPilot's physical operations. */
 export class AdbExecutionAdapter implements AppPilotAdapter {
   readonly transport = "adb";
-  private activeIdentity?: AppPilotIdentity;
 
   constructor(
     private readonly executor = new AdbAndroidExecutor(new AdbTransport()),
   ) {}
 
   async handshake(): Promise<AdapterHandshakeResult> {
-    this.invalidateDiscovery();
-    const result = await this.executor.handshake();
-    if (result.status === "connected") this.activeIdentity = result.identity;
-    return result;
+    return this.executor.handshake();
   }
 
   install(request: InstallRequest): Promise<AppPilotResult<void>> {
-    return this.withIdentity((identity) => this.executor.install(identity, request));
+    return this.executor.install(request.identity, request);
   }
 
   uninstall(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withIdentity((identity) => this.executor.uninstall(identity, request));
+    return this.executor.uninstall(request.identity, request);
   }
 
-  launch(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withIdentity((identity) => this.executor.launch(identity, request));
+  launch(request: LaunchRequest): Promise<AppPilotResult<void>> {
+    return this.executor.launch(request.identity, request);
   }
 
-  async restart(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    const stopped = await this.shutdown(request);
-    return stopped.ok ? this.launch(request) : stopped;
+  async restart(request: LaunchRequest): Promise<AppPilotResult<void>> {
+    const stopped = await this.executor.shutdown(request.identity, request);
+    return stopped.ok
+      ? this.executor.launch(request.identity, request)
+      : stopped;
   }
 
   shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withIdentity((identity) => this.executor.shutdown(identity, request));
+    return this.executor.shutdown(request.identity, request);
   }
 
   tap(request: PointRequest): Promise<AppPilotResult<void>> {
-    return this.withIdentity((identity) => this.executor.tap(identity, request));
+    return this.executor.tap(request.identity, request);
   }
 
   swipe(request: SwipeRequest): Promise<AppPilotResult<void>> {
-    return this.withIdentity((identity) => this.executor.swipe(identity, request));
+    return this.executor.swipe(request.identity, request);
   }
 
   logs(request: LogsRequest): Promise<AppPilotResult<LogsResult>> {
-    return this.withIdentity((identity) => this.executor.logs(identity, request));
-  }
-
-  invalidateDiscovery(): void {
-    this.activeIdentity = undefined;
-  }
-
-  private async withIdentity<T>(
-    operation: (identity: AppPilotIdentity) => Promise<AppPilotResult<T>>,
-  ): Promise<AppPilotResult<T>> {
-    if (!this.activeIdentity) {
-      return {
-        ok: false,
-        code: "execution_not_discovered",
-        message: `Transport ${this.transport} has no discovered executor. Call identify first.`,
-      };
-    }
-    const result = await operation(this.activeIdentity);
-    if (!result.ok && result.requiresIdentify) this.invalidateDiscovery();
-    return result;
+    return this.executor.logs(request.identity, request);
   }
 }
 
