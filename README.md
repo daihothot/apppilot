@@ -22,13 +22,13 @@ apppilot identify --transport unity-pipeline
 apppilot identify --transport adb
 
 apppilot build --platform android --project-path /project --output-path /output/app.apk
-apppilot install --app-id com.example.app --artifact-path /output/app.apk
-apppilot launch --app-id com.example.app
-apppilot shutdown --app-id com.example.app
-apppilot logs --app-id com.example.app --output-path /output/logs
+apppilot install --identity '{"transport":"adb","platform":{"type":"android","version":"16"}}' --app-id com.example.app --artifact-path /output/app.apk
+apppilot launch --identity '{"transport":"adb","platform":{"type":"android","version":"16"}}' --app-id com.example.app
+apppilot shutdown --identity '{"transport":"adb","platform":{"type":"android","version":"16"}}' --app-id com.example.app
+apppilot logs --identity '{"transport":"adb","platform":{"type":"android","version":"16"}}' --app-id com.example.app --output-path /output/logs
 ```
 
-The external host owns the AppPilot process lifetime. Call `identify` before runtime operations in that process. AppPilot caches the discovered Adapter and Executor until they become unavailable or the external host ends the process.
+The caller persists the identity returned by `identify` and passes it to every runtime operation. AppPilot keeps no runtime selection between commands.
 
 ## Package
 
