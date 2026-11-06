@@ -21,6 +21,8 @@ function helpText(): string {
   apppilot build --platform ios|android --project-path <PATH> --output-path <PATH>
   apppilot install --identity <JSON> --app-id <ID> --artifact-path <PATH>
   apppilot uninstall|launch|restart|shutdown --identity <JSON> --app-id <ID>
+  apppilot write-rbt-config --identity <JSON> --app-id <ID> --entry KEY=VALUE [...]
+  apppilot clear-rbt-config --identity <JSON> --app-id <ID>
   apppilot tap|swipe --identity <JSON> ...
   apppilot logs --identity <JSON> --app-id <ID> --output-path <PATH>
   apppilot setup --ios|--plugin|--all

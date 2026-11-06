@@ -14,6 +14,8 @@ import { ShutdownCommand } from "./commands/shutdown-command.ts";
 import { SwipeCommand } from "./commands/swipe-command.ts";
 import { TapCommand } from "./commands/tap-command.ts";
 import { UninstallCommand } from "./commands/uninstall-command.ts";
+import { WriteRbtConfigCommand } from "./commands/write-rbt-config-command.ts";
+import { ClearRbtConfigCommand } from "./commands/clear-rbt-config-command.ts";
 
 export function createAppPilotCli(
   operationPort: AppPilotOperationPort,
@@ -27,6 +29,8 @@ export function createAppPilotCli(
     ["launch", new LaunchCommand(operationPort)],
     ["restart", new RestartCommand(operationPort)],
     ["shutdown", new ShutdownCommand(operationPort)],
+    ["write-rbt-config", new WriteRbtConfigCommand(operationPort)],
+    ["clear-rbt-config", new ClearRbtConfigCommand(operationPort)],
     ["tap", new TapCommand(operationPort)],
     ["swipe", new SwipeCommand(operationPort)],
     ["logs", new LogsCommand(operationPort)],

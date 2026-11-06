@@ -1,5 +1,6 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
 import type {
   AppPilotIdentity,
   AppPilotResult,
@@ -9,6 +10,7 @@ import type {
   LogsRequest,
   LogsResult,
   PointRequest,
+  RbtConfigRequest,
   SwipeRequest,
 } from "../../../app-pilot-operation-port.ts";
 import { invalidArgument } from "../../../app-pilot-errors.ts";
@@ -179,6 +181,46 @@ export class AdbAndroidExecutor {
     return target.ok
       ? this.command(["-s", target.value, "shell", "input", "tap", String(x.value), String(y.value)], "android_tap_failed")
       : target;
+  }
+  async writeRbtConfig(identity: AppPilotIdentity, request: RbtConfigRequest): Promise<AppPilotResult<void>> {
+    const appId = stringArgument(request.appId, "appId");
+    if (!appId.ok) return appId;
+    const target = await this.requireTarget(identity);
+    if (!target.ok) return target;
+    const running = await this.transport.execute(["-s", target.value, "shell", "pidof", appId.value]);
+    if (running.stdout.trim()) return failure("rbt_config_target_running", "Stop the Android app before writing RBT startup configuration.");
+    if (running.exitCode !== 0 && running.exitCode !== 1) {
+      return failure("rbt_config_write_failed", running.stderr.trim() || "Android process state could not be read.");
+    }
+    const directory = `/sdcard/Android/data/${appId.value}/files/GuruRbt`;
+    const localDirectory = mkdtempSync(join(tmpdir(), "apppilot-rbt-config-"));
+    try {
+      const file = join(localDirectory, "rbt-config.json");
+      writeFileSync(file, JSON.stringify(request.entries));
+      for (const args of [
+        ["-s", target.value, "shell", "mkdir", "-p", directory],
+        ["-s", target.value, "push", file, `${directory}/rbt-config.json.tmp`],
+        ["-s", target.value, "shell", "mv", "-f", `${directory}/rbt-config.json.tmp`, `${directory}/rbt-config.json`],
+      ]) {
+        const result = await this.command(args, "rbt_config_write_failed");
+        if (!result.ok) return result;
+      }
+      return { ok: true, value: undefined };
+    } catch (error) {
+      return failure("rbt_config_write_failed", error instanceof Error ? error.message : String(error));
+    } finally {
+      rmSync(localDirectory, { recursive: true, force: true });
+    }
+  }
+  async clearRbtConfig(identity: AppPilotIdentity, request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    const appId = stringArgument(request.appId, "appId");
+    if (!appId.ok) return appId;
+    const target = await this.requireTarget(identity);
+    if (!target.ok) return target;
+    const directory = `/sdcard/Android/data/${appId.value}/files/GuruRbt`;
+    return this.command([
+      "-s", target.value, "shell", "rm", "-f", `${directory}/rbt-config.json`, `${directory}/rbt-config.json.tmp`,
+    ], "rbt_config_clear_failed");
   }
   async swipe(identity: AppPilotIdentity, request: SwipeRequest): Promise<AppPilotResult<void>> {
     const fromX = numberArgument(request.fromX, "fromX");

@@ -6,6 +6,7 @@ import type {
   LogsRequest,
   LogsResult,
   PointRequest,
+  RbtConfigRequest,
   SwipeRequest,
 } from "../../app-pilot-operation-port.ts";
 import type { AdapterHandshakeResult, AppPilotAdapter } from "../app-pilot-adapter.ts";
@@ -45,6 +46,12 @@ export class AdbExecutionAdapter implements AppPilotAdapter {
 
   shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>> {
     return this.executor.shutdown(request.identity, request);
+  }
+  writeRbtConfig(request: RbtConfigRequest): Promise<AppPilotResult<void>> {
+    return this.executor.writeRbtConfig(request.identity, request);
+  }
+  clearRbtConfig(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    return this.executor.clearRbtConfig(request.identity, request);
   }
 
   tap(request: PointRequest): Promise<AppPilotResult<void>> {

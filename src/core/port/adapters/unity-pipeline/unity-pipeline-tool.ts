@@ -120,7 +120,7 @@ function parseJsonResult(operation: string, stdout: string): ParsedUnityPipeline
   const errors = value.errors.map(toJsonValue);
   const warnings = value.warnings.map(toJsonValue);
   const data = value.data;
-  let parsedSuccess = value.success;
+  const parsedSuccess = value.success;
   let result: UnityPipelineJsonValue;
   if (!isRecord(data)) {
     return { success: false, errors, warnings, error: `Unity Pipeline ${operation} data must be an object.` };
@@ -136,10 +136,12 @@ function parseJsonResult(operation: string, stdout: string): ParsedUnityPipeline
     for (const instance of data.instances) {
       if (!isRecord(instance)
         || typeof instance.version !== "string"
-        || typeof instance.state !== "string") {
-        return { success: false, errors, warnings, error: "Unity Pipeline status instances must contain version and state." };
+        || typeof instance.state !== "string"
+        || typeof instance.project !== "string"
+        || !instance.project) {
+        return { success: false, errors, warnings, error: "Unity Pipeline status instances must contain version, state and project." };
       }
-      instances.push({ version: instance.version, state: instance.state });
+      instances.push({ version: instance.version, state: instance.state, project: instance.project });
     }
     result = { count: data.count, instances };
   } else if (operation === "list") {
@@ -158,10 +160,9 @@ function parseJsonResult(operation: string, stdout: string): ParsedUnityPipeline
     }
     result = { count: data.count, commands };
   } else {
-    if (data.command !== operation || typeof data.success !== "boolean") {
+    if (data.command !== operation) {
       return { success: false, errors, warnings, error: `Unity Pipeline ${operation} data does not match the editor command result contract.` };
     }
-    parsedSuccess = value.success && data.success;
     if (operation !== "editor_status") {
       if (typeof data.result !== "string" || data.result.length === 0) {
         return { success: false, errors, warnings, error: `Unity Pipeline ${operation} result must be a non-empty message.` };

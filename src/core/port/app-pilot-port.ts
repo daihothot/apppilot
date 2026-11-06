@@ -17,6 +17,7 @@ import type {
   LogsRequest,
   LogsResult,
   PointRequest,
+  RbtConfigRequest,
   SwipeRequest,
 } from "./app-pilot-operation-port.ts";
 
@@ -49,6 +50,12 @@ export class AppPilotPort implements AppPilotOperationPort {
   }
   shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>> {
     return this.withAdapter(request.identity, (adapter) => adapter.shutdown(request));
+  }
+  writeRbtConfig(request: RbtConfigRequest): Promise<AppPilotResult<void>> {
+    return this.withAdapter(request.identity, (adapter) => adapter.writeRbtConfig(request));
+  }
+  clearRbtConfig(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    return this.withAdapter(request.identity, (adapter) => adapter.clearRbtConfig(request));
   }
   tap(request: PointRequest): Promise<AppPilotResult<void>> {
     return this.withAdapter(request.identity, (adapter) => adapter.tap(request));

@@ -5,9 +5,11 @@ import type {
   AppPilotResult,
   AppTargetRequest,
   InstallRequest,
+  LaunchRequest,
   LogsRequest,
   LogsResult,
   PointRequest,
+  RbtConfigRequest,
   SwipeRequest,
 } from "../../app-pilot-operation-port.ts";
 import type {
@@ -57,19 +59,25 @@ export class UnityPipelineExecutionAdapter implements AppPilotAdapter {
     return this.unsupported("uninstall", request.identity);
   }
 
-  launch(request: AppTargetRequest): Promise<AppPilotResult<void>> {
-    return this.withExecutor(request.identity, (executor) => executor.start(request.identity));
+  launch(request: LaunchRequest): Promise<AppPilotResult<void>> {
+    return this.withExecutor(request.identity, (executor) => executor.start(request.identity, request.parameters));
   }
 
-  restart(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+  restart(request: LaunchRequest): Promise<AppPilotResult<void>> {
     return this.withExecutor(request.identity, async (executor) => {
       const stopped = await executor.stop(request.identity);
-      return stopped.ok ? executor.start(request.identity) : stopped;
+      return stopped.ok ? executor.start(request.identity, request.parameters) : stopped;
     });
   }
 
   shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>> {
     return this.withExecutor(request.identity, (executor) => executor.stop(request.identity));
+  }
+  writeRbtConfig(request: RbtConfigRequest): Promise<AppPilotResult<void>> {
+    return this.withExecutor(request.identity, (executor) => executor.writeRbtConfig(request));
+  }
+  clearRbtConfig(request: AppTargetRequest): Promise<AppPilotResult<void>> {
+    return this.withExecutor(request.identity, (executor) => executor.clearRbtConfig(request.identity));
   }
 
   tap(request: PointRequest): Promise<AppPilotResult<void>> {

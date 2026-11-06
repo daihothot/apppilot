@@ -49,6 +49,10 @@ export interface LaunchRequest extends AppTargetRequest {
   parameters?: Readonly<Record<string, string>>;
 }
 
+export interface RbtConfigRequest extends AppTargetRequest {
+  entries: Readonly<Record<string, string>>;
+}
+
 export interface InstallRequest extends AppTargetRequest {
   artifactPath?: string;
 }
@@ -83,6 +87,8 @@ export interface AppPilotRuntimePort {
   launch(request: LaunchRequest): Promise<AppPilotResult<void>>;
   restart(request: LaunchRequest): Promise<AppPilotResult<void>>;
   shutdown(request: AppTargetRequest): Promise<AppPilotResult<void>>;
+  writeRbtConfig(request: RbtConfigRequest): Promise<AppPilotResult<void>>;
+  clearRbtConfig(request: AppTargetRequest): Promise<AppPilotResult<void>>;
   tap(request: PointRequest): Promise<AppPilotResult<void>>;
   swipe(request: SwipeRequest): Promise<AppPilotResult<void>>;
   logs(request: LogsRequest): Promise<AppPilotResult<LogsResult>>;
