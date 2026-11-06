@@ -39,12 +39,16 @@ test("Unity Pipeline discovers platform executors in registration order", async 
     identify: async () => { calls.push("android"); return undefined; },
     start: async () => ok(),
     stop: async () => ok(),
+    writeRbtConfig: async () => ok(),
+    clearRbtConfig: async () => ok(),
   };
   const available: UnityPipelinePlatformExecutor = {
     platformType: "unity_editor",
     identify: async () => { calls.push("unity_editor"); return { ok: true, value: connected }; },
     start: async () => ok(),
     stop: async () => ok(),
+    writeRbtConfig: async () => ok(),
+    clearRbtConfig: async () => ok(),
   };
   const adapter = new UnityPipelineExecutionAdapter([unavailable, available]);
 
@@ -66,6 +70,8 @@ function fakeAdapter(
     launch: async () => ok(),
     restart: async () => ok(),
     shutdown: async () => ok(),
+    writeRbtConfig: async () => ok(),
+    clearRbtConfig: async () => ok(),
     tap: async () => ok(),
     swipe: async () => ok(),
     logs: async (): Promise<AppPilotResult<LogsResult>> => ({ ok: true, value: { path: "/log" } }),

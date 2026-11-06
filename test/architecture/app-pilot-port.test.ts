@@ -17,9 +17,11 @@ test("runtime semantics route every explicit identity without cached discovery",
 
   await port.install({ identity, appId: "app", artifactPath: "/app.apk" });
   await port.restart({ identity, appId: "app" });
-  expect(calls).toEqual(["install", "restart"]);
+  await port.writeRbtConfig({ identity, appId: "app", entries: { guru_rbt_startup: "{}" } });
+  await port.clearRbtConfig({ identity, appId: "app" });
+  expect(calls).toEqual(["install", "restart", "writeRbtConfig", "clearRbtConfig"]);
   expect(await port.identify({})).toEqual({ ok: true, value: identity });
-  expect(calls).toEqual(["install", "restart", "handshake"]);
+  expect(calls).toEqual(["install", "restart", "writeRbtConfig", "clearRbtConfig", "handshake"]);
 });
 
 test("an unavailable identity does not create or invalidate AppPilot state", async () => {
@@ -69,6 +71,8 @@ function fakeAdapter(calls: string[]): AppPilotAdapter {
     launch: ok,
     restart: async () => { calls.push("restart"); return ok(); },
     shutdown: ok,
+    writeRbtConfig: async () => { calls.push("writeRbtConfig"); return ok(); },
+    clearRbtConfig: async () => { calls.push("clearRbtConfig"); return ok(); },
     tap: ok,
     swipe: ok,
     logs: async (): Promise<AppPilotResult<LogsResult>> => ({ ok: true, value: { path: "/log" } }),
